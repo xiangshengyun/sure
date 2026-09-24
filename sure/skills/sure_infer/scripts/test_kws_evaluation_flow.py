@@ -73,6 +73,74 @@ def _write_kws_source(root: Path, *, include_negative: bool = True) -> Path:
     return source
 
 
+def _write_local_asr_cmd_source(root: Path, *, include_negative: bool = True) -> Path:
+    source = root / "local_asr_cmd_words"
+    source.mkdir(parents=True)
+    rows = []
+    for key, keyword in (("louder", "大点声"), ("hot", "太热了")):
+        audio = source / f"{key}.wav"
+        audio.write_bytes(b"RIFF-" + key.encode("ascii"))
+        rows.append(
+            {
+                "annotation": [
+                    {
+                        "transcription": {
+                            "language": "zh",
+                            "keyword": [keyword],
+                            "repeat_times": 20,
+                        },
+                        "seg_id": "000000000",
+                    }
+                ],
+                "attribute": {
+                    "duration": 1000,
+                    "path": audio.name,
+                    "size": audio.stat().st_size,
+                    "raw_data_format": "wav",
+                    "channels": 1,
+                    "sample_rate": 16000,
+                },
+                "sample_id": key,
+            }
+        )
+    if include_negative:
+        audio = source / "other.wav"
+        audio.write_bytes(b"RIFF-other")
+        rows.append(
+            {
+                "annotation": [
+                    {
+                        "transcription": {
+                            "language": "zh",
+                            "keyword": ["其他词"],
+                            "repeat_times": 20,
+                        },
+                        "seg_id": "000000000",
+                    }
+                ],
+                "attribute": {
+                    "duration": 1000,
+                    "path": audio.name,
+                    "size": audio.stat().st_size,
+                    "raw_data_format": "wav",
+                    "channels": 1,
+                    "sample_rate": 16000,
+                },
+                "expected_detected": False,
+                "sample_id": "other",
+            }
+        )
+    (source / "ds.jsonl").write_text(
+        json.dumps({"supported_tasks": ["local_asr_cmd"], "audio": {"speech": {"language": "zh"}}}) + "\n",
+        encoding="utf-8",
+    )
+    (source / "sample.jsonl").write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    return source
+
+
 class KwsSourceProjectionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -149,6 +217,39 @@ class KwsSourceProjectionTests(unittest.TestCase):
         ref = source_resolver.resolve_site_source_entry(str(source))
 
         self.assertEqual(source_resolver.read_source_task(ref), "KWS")
+
+    def test_projects_local_asr_cmd_supported_task_as_kws(self) -> None:
+        source = _write_local_asr_cmd_source(self.source_root)
+        ref = source_resolver.resolve_site_source_entry(str(source))
+
+        self.assertEqual(ref.supported_tasks, ("KWS",))
+        manager = _manager(self.root)
+        output = manager.download_and_convert(str(source), task="KWS")
+
+        self.assertEqual(output.name, "local_asr_cmd_words__unversioned__kws.jsonl")
+        rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([row["task"] for row in rows], ["KWS", "KWS", "KWS"])
+        self.assertEqual(
+            [row["keywords"] for row in rows], [["大点声"], ["太热了"], ["其他词"]]
+        )
+        self.assertEqual([row["expected_detected"] for row in rows], [True, True, False])
+        self.assertEqual([row["expected_keyword"] for row in rows], ["大点声", "太热了", None])
+        report = json.loads(
+            (
+                manager.sure_dir
+                / "local_asr_cmd_words"
+                / "projections"
+                / "kws_wakeword_v1"
+                / "conversion_report.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertNotIn("kws_positive_only_accuracy", report["validation"])
+
+    def test_rejects_positive_only_local_asr_cmd_source(self) -> None:
+        source = _write_local_asr_cmd_source(self.source_root, include_negative=False)
+
+        with self.assertRaisesRegex(ValueError, "positive and one negative"):
+            _manager(self.root).download_and_convert(str(source), task="KWS")
 
     def test_rejects_a_kws_source_without_negative_samples(self) -> None:
         source = _write_kws_source(self.source_root, include_negative=False)

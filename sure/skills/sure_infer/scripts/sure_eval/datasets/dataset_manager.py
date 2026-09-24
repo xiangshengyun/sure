@@ -839,8 +839,12 @@ class DatasetManager:
             )
         if not rows:
             raise ValueError(f"source-root conversion produced no samples for {ref.source_root}")
-        if task == "KWS" and {row["expected_detected"] for row in rows} != {False, True}:
-            raise ValueError("KWS evaluation requires at least one positive and one negative sample")
+        if task == "KWS":
+            expected_labels = {row["expected_detected"] for row in rows}
+            if expected_labels != {False, True}:
+                raise ValueError(
+                    "KWS evaluation requires at least one positive and one negative sample"
+                )
 
         jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         with jsonl_path.open("w", encoding="utf-8") as handle:
@@ -873,9 +877,9 @@ class DatasetManager:
             fields = {
                 "key": "key|sample_id",
                 "path": "attribute.path|path|audio|wav",
-                "keywords": "keywords|keyword",
-                "expected_detected": "expected_detected|expected|label|keyword_id",
-                "expected_keyword": "expected_keyword|unambiguous keyword match",
+                "keywords": "keywords|keyword|annotation[].transcription.keyword",
+                "expected_detected": "expected_detected|expected|label|keyword_id|keyword annotation",
+                "expected_keyword": "expected_keyword|single keyword annotation|unambiguous keyword match",
                 "duration": "duration|duration_ms|attribute.duration|wav header",
                 "task": "constant:KWS",
                 "language": "row.language|ds.audio.speech.language|any",
@@ -1368,6 +1372,44 @@ class DatasetManager:
                 keywords.append(keyword)
         return keywords
 
+    def _extract_oref_keywords(self, record: dict[str, Any]) -> list[str]:
+        keywords = self._kws_keywords(record.get("keywords") or record.get("keyword"))
+        if keywords:
+            return keywords
+        annotations = record.get("annotation")
+        if not isinstance(annotations, list):
+            return []
+        for annotation in annotations:
+            if not isinstance(annotation, dict):
+                continue
+            transcription = annotation.get("transcription")
+            if not isinstance(transcription, dict):
+                continue
+            keywords = self._kws_keywords(
+                transcription.get("keywords") or transcription.get("keyword")
+            )
+            if keywords:
+                return keywords
+        return []
+
+    @staticmethod
+    def _has_oref_keyword_annotation(record: dict[str, Any]) -> bool:
+        annotations = record.get("annotation")
+        if not isinstance(annotations, list):
+            return False
+        for annotation in annotations:
+            if not isinstance(annotation, dict):
+                continue
+            transcription = annotation.get("transcription")
+            if not isinstance(transcription, dict):
+                continue
+            if (
+                transcription.get("keywords") is not None
+                or transcription.get("keyword") is not None
+            ):
+                return True
+        return False
+
     @staticmethod
     def _kws_expected(value: Any) -> bool:
         if isinstance(value, bool):
@@ -1431,7 +1473,7 @@ class DatasetManager:
                     if key in seen_keys:
                         raise ValueError(f"duplicate sample key: {key}")
 
-                    keywords = self._kws_keywords(record.get("keywords") or record.get("keyword"))
+                    keywords = self._extract_oref_keywords(record)
                     if not keywords:
                         raise ValueError("missing non-empty keywords")
                     expected_value = record.get("expected_detected")
@@ -1439,6 +1481,8 @@ class DatasetManager:
                         expected_value = record.get("expected", record.get("label"))
                     if expected_value is None and record.get("keyword_id") is not None:
                         expected_value = int(record["keyword_id"]) >= 0
+                    if expected_value is None and self._has_oref_keyword_annotation(record):
+                        expected_value = True
                     expected_detected = self._kws_expected(expected_value)
 
                     expected_keyword = record.get("expected_keyword")

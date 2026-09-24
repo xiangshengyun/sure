@@ -309,6 +309,23 @@ class DatasetDetailsSourceTests(unittest.TestCase):
             {"name": "wake-model", "declared_task": "KWS"}, details
         )
 
+    def test_kws_model_accepts_local_asr_cmd_source_task_alias(self) -> None:
+        local_cmd_root = make_source_tree(
+            self.source_root, "cmd_ds", "v1.0.0", supported_tasks=["local_asr_cmd"]
+        )
+
+        details = resolve_eval_input._dataset_details(
+            self.manager, [str(local_cmd_root)], ["accuracy"], None, model_task="KWS"
+        )
+
+        detail = details[0]
+        self.assertEqual(detail["task"], "KWS")
+        self.assertEqual(detail["supported_tasks"], ["KWS"])
+        self.assertEqual(Path(detail["jsonl_path"]).name, "cmd_ds__v1.0.0__kws.jsonl")
+        resolve_eval_input._check_task_compatibility(
+            {"name": "wake-model", "declared_task": "KWS"}, details
+        )
+
     def test_plain_asr_model_on_multi_task_source_stays_asr(self) -> None:
         multi_root = make_source_tree(
             self.source_root, "duo_ds", "v1.0.0", supported_tasks=["ASR", "TTS"]

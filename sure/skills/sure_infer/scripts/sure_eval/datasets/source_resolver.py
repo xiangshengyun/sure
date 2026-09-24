@@ -38,6 +38,7 @@ _SOURCE_TASK_ALIASES = {
     "kws": "KWS",
     "lid": "LID",
     "language_identification": "LID",
+    "local_asr_cmd": "KWS",
     "spoken_language_identification": "LID",
     "s2tt": "S2TT",
     "sa-asr": "SA-ASR",
@@ -383,7 +384,7 @@ def read_source_supported_tasks(ds_jsonl: str) -> tuple[str, ...]:
         return ()
     tasks: list[str] = []
     for value in raw:
-        task = _normalize_task(value)
+        task = _normalize_source_task(value) or _normalize_task(value)
         if task and task not in tasks:
             tasks.append(task)
     return tuple(tasks)

@@ -29,6 +29,7 @@ from vc_exec import (
     run_vc_job,
     split_mount,
 )
+from gpu_lane import restrict_docker_gpus
 from model_child_env import model_child_env
 
 GIB = 1024 ** 3
@@ -614,6 +615,9 @@ def main() -> int:
     output = Path(args.produces)
     data = read_object(output)
     command, shell = command_for(data.get("run_command"))
+    # A local container run is the only place the authored command executes
+    # as written; the lane narrows an authored `--gpus all` before it starts.
+    command = restrict_docker_gpus(command)
     cwd = Path(str(data.get("cwd") or run_dir)).resolve()
     if not cwd.is_dir():
         raise ValueError(f"validation cwd does not exist: {cwd}")

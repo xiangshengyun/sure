@@ -3,6 +3,7 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:pa
 import type { SureHookContext, SureHookResult } from "@earendil-works/pi-coding-agent/hooks";
 import { agentBinDir, demoteAgentBinDir } from "../../../runtime/agent-path.ts";
 import { TASK_TYPES } from "../../../runtime/evaluation/task-types.generated.ts";
+import { applyGpuLane } from "../../../runtime/gpu-lane.ts";
 import { type HarnessRuntimeContract, resolveHarnessPython } from "../../../runtime/harness/resolve.ts";
 import {
 	gateUnavailable,
@@ -539,6 +540,7 @@ export function preStart(ctx: SureHookContext): SureHookResult {
 	// Mirror sure_trans: park the agent bin dir at the end of PATH so a docker
 	// shim dropped there cannot answer every push with "denied" (agent-path.ts).
 	demoteAgentBinDir(process.env, agentBinDir());
+	applyGpuLane(process.env, "reserved");
 	const resolved = resolveOnboardArgs(ctx);
 	if (resolved.error) {
 		return failure(resolved.error, "Invalid model_input_path.");

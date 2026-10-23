@@ -5,9 +5,13 @@ from __future__ import annotations
 
 import re
 import os
+import sys
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime" / "harness"))
+
+from gpu_lane import gpus_argument
 from harness_runtime import harness_runtime_from_eval_input
 from deployment_binding import DEPLOYMENT_BINDING_V1, DEPLOYMENT_BINDING_V2
 from docker_runtime import resolve_docker_binary
@@ -265,7 +269,7 @@ def build_local_container_command(
                     raise ValueError("CUDA_VISIBLE_DEVICES does not provide enough distinct GPUs")
                 command.extend(["--gpus", '"device=' + ",".join(devices[:workers]) + '"'])
         else:
-            command.extend(["--gpus", "all"])
+            command.extend(["--gpus", gpus_argument()])
 
     _mount(command, mounted_targets, repo_root.resolve(), container_path(repo_root.resolve()), read_only=True)
     _mount(

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { SureHookContext, SureHookResult } from "@earendil-works/pi-coding-agent/hooks";
 import { agentBinDir, demoteAgentBinDir } from "../../../runtime/agent-path.ts";
+import { applyGpuLane } from "../../../runtime/gpu-lane.ts";
 import { type HarnessRuntimeContract, resolveHarnessPython } from "../../../runtime/harness/resolve.ts";
 import {
 	gateUnavailable,
@@ -143,6 +144,7 @@ export function preStart(ctx: SureHookContext): SureHookResult {
 	// Several units drive docker straight from bash, so the shadowing
 	// has to be cleared on the environment itself, not just in the skill scripts.
 	demoteAgentBinDir(process.env, agentBinDir());
+	applyGpuLane(process.env, "reserved");
 	const args = parseArgs(ctx.args);
 	const dockerfile = args.dockerfile;
 	const pythonExecutable = args.python_executable;

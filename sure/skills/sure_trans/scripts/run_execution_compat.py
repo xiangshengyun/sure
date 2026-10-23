@@ -10,6 +10,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "sure" / "runtime" / "harness"))
+
+from gpu_lane import gpus_argument
 from vc_exec import (
     DEFAULT_CPUS,
     DEFAULT_GPUS,
@@ -59,7 +62,7 @@ def read_object(path: Path) -> dict:
 def run_probe(image: str, use_gpu: bool) -> tuple[list[str], subprocess.CompletedProcess[str], float]:
     command = ["docker", "run", "--rm"]
     if use_gpu:
-        command.extend(["--gpus", "all"])
+        command.extend(["--gpus", gpus_argument()])
     command.extend(["--entrypoint", "python", image, "-c", PROBE])
     started = time.monotonic()
     try:

@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 # and the infer client drift apart on what "jsonl" is spelled like.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sure_infer" / "scripts"))
 from deployment_contract import declared_server_protocol
+from gpu_lane import restrict_docker_gpus
 from model_child_env import model_child_env
 from server_protocol import JSONL_SERVER_PROTOCOL
 from sure.runtime.evaluation.task_registry import normalize_task
@@ -326,6 +327,8 @@ def run_validation_command(
     validation_device: str | None,
 ) -> tuple[int, float, Path, str, Path]:
     command, shell, cwd = command_from_artifact(data, kind, run_dir)
+    # Keep an authored `docker run --gpus all` inside this run's GPU lane.
+    command = restrict_docker_gpus(command)
     if command is None:
         raise ValueError(
             "validation artifacts must include run_command or validate_py so "

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
@@ -246,6 +247,12 @@ def validate_runtime_roles(
     harness_python = str(harness.get("python_executable") or "")
     if not model_python or not harness_python or model_python == harness_python:
         raise ValueError("Harness Python and Model Python must be non-empty and distinct")
+    working_dir = model.get("working_dir")
+    if not isinstance(working_dir, str) or not PurePosixPath(working_dir).is_absolute():
+        raise ValueError("docker_validation.json model_runtime.working_dir must be an absolute container path")
+    server_command = model.get("server_command")
+    if not isinstance(server_command, list) or not server_command or not all(isinstance(item, str) and item for item in server_command):
+        raise ValueError("docker_validation.json model_runtime.server_command must be a non-empty string list")
     harness = normalize_harness_runtime(harness)
     harness_python = str(harness.get("python_executable") or "")
     if not str(harness.get("runtime_id") or "") or not str(harness.get("lock_sha256") or ""):
@@ -265,6 +272,74 @@ def validate_runtime_roles(
     if failed_harness:
         raise ValueError("docker_validation.json has failed Harness Runtime checks: " + ", ".join(failed_harness))
     return model, harness
+
+
+def _dockerfile_instructions(path: Path) -> list[str]:
+    logical_lines: list[str] = []
+    pending = ""
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.endswith("\\"):
+            pending += line[:-1].rstrip() + " "
+            continue
+        logical_lines.append(pending + line)
+        pending = ""
+    if pending:
+        logical_lines.append(pending.rstrip())
+    return logical_lines
+
+
+def _dockerfile_runtime_settings(path: Path) -> dict[str, str]:
+    settings: dict[str, str] = {}
+    for instruction in _dockerfile_instructions(path):
+        name, _, value = instruction.partition(" ")
+        if name.upper() == "WORKDIR" and value.strip():
+            settings["WORKDIR"] = shlex.split(value)[0]
+        elif name.upper() == "ENV" and value.strip():
+            tokens = shlex.split(value)
+            index = 0
+            while index < len(tokens):
+                token = tokens[index]
+                if "=" in token:
+                    key, env_value = token.split("=", 1)
+                    settings[key] = env_value
+                    index += 1
+                elif index + 1 < len(tokens):
+                    settings[token] = tokens[index + 1]
+                    index += 2
+                else:
+                    index += 1
+    return settings
+
+
+def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[str, Any]) -> None:
+    working_dir = str(model_runtime["working_dir"])
+    settings = _dockerfile_runtime_settings(dockerfile)
+    declared_workdir = settings.get("WORKDIR")
+    if declared_workdir and declared_workdir != working_dir:
+        raise ValueError(
+            f"Dockerfile WORKDIR {declared_workdir!r} disagrees with model_runtime.working_dir {working_dir!r}"
+        )
+    declared_model_dir = settings.get("SURE_MODEL_DIR")
+    if declared_model_dir and declared_model_dir != working_dir:
+        raise ValueError(
+            f"Dockerfile SURE_MODEL_DIR {declared_model_dir!r} disagrees with model_runtime.working_dir {working_dir!r}"
+        )
+    declared_pythonpath = settings.get("PYTHONPATH")
+    if declared_pythonpath:
+        target = PurePosixPath(working_dir)
+        for entry in declared_pythonpath.split(":"):
+            path = PurePosixPath(entry)
+            if "model" not in path.parts:
+                continue
+            try:
+                path.relative_to(target)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Dockerfile PYTHONPATH entry {entry!r} does not use model_runtime.working_dir {working_dir!r}"
+                ) from exc
 
 
 def validate_container_documents(

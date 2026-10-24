@@ -24,6 +24,7 @@ from deployment_contract import (
     resolve_model_dir,
     sha256_file,
     timestamp_after,
+    validate_container_runtime_contract,
     validate_container_documents,
     validate_runtime_roles,
 )
@@ -143,6 +144,8 @@ def build_inventory(model_dir: Path, run_dir: Path) -> dict[str, Any]:
         image, digest, image_ref = validate_container_documents(build, validation, registry)
         validated_model_runtime, validated_harness_runtime = validate_runtime_roles(validation)
         runtime = validated_model_runtime
+        dockerfile = model_dir / str(build.get("dockerfile_path") or "Dockerfile")
+        validate_container_runtime_contract(dockerfile, runtime)
         model_runtime = {
             "required": True,
             "runtime_type": "model_python",
@@ -176,7 +179,7 @@ def build_inventory(model_dir: Path, run_dir: Path) -> dict[str, Any]:
             "target_image_ref": image_ref,
             "dockerfile": {"path": str(build.get("dockerfile_path") or "Dockerfile"), "sha256": build["dockerfile_sha256"]},
             "python_executable": model_runtime["python_executable"],
-            "working_dir": runtime.get("working_dir") or "/workspace/model",
+            "working_dir": runtime["working_dir"],
             "server_command": server_command or ["python", "server.py"],
             "tool_names": [
                 str(tool["name"])
@@ -188,7 +191,7 @@ def build_inventory(model_dir: Path, run_dir: Path) -> dict[str, Any]:
             else True,
             "mount_policy": {
                 "nfs_models_read_only": True,
-                "model_bundle": {"source": ".", "target": runtime.get("working_dir") or "/workspace/model", "read_only": True},
+                "model_bundle": {"source": ".", "target": runtime["working_dir"], "read_only": True},
                 "result_workspace": {"source": "sure/results", "target": "/sure-output", "read_only": False},
             },
         }

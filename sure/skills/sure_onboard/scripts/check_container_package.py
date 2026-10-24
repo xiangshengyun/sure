@@ -20,6 +20,7 @@ from deployment_contract import (
     resolve_model_dir,
     sha256_file,
     validate_container_documents,
+    validate_container_runtime_contract,
     validate_image_and_digest,
     validate_runtime_roles,
 )
@@ -137,6 +138,7 @@ def main() -> int:
             expected_runtime_id=os.environ.get("SURE_HARNESS_RUNTIME_ID") or None,
             expected_lock_sha256=os.environ.get("SURE_HARNESS_LOCK_SHA256") or None,
         )
+        validate_container_runtime_contract(dockerfile, model_runtime)
         docker_bin = resolve_docker_binary()
         verify_live_image(docker_bin, image_ref)
         verify_live_runtimes(docker_bin, image_ref, model_runtime, harness_runtime)

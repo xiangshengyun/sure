@@ -26,11 +26,13 @@
 		},
 		"model_runtime": {
 			"type": "object",
-			"required": ["runtime_type", "python_executable", "checks"],
+			"required": ["runtime_type", "python_executable", "working_dir", "server_command", "checks"],
 			"properties": {
 				"runtime_type": { "const": "model_python" },
 				"python_executable": { "type": "string" },
 				"python_version": { "type": ["string", "null"] },
+				"working_dir": { "type": "string", "pattern": "^/" },
+				"server_command": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
 				"checks": { "type": "object" }
 			},
 			"additionalProperties": true

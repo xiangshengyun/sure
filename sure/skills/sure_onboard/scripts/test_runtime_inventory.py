@@ -30,7 +30,7 @@ class RuntimeInventoryTests(unittest.TestCase):
         self.run_artifacts.mkdir(parents=True)
         for name in stage_model_artifacts.CORE_FILES:
             (self.model_dir / name).write_text("# test\n", encoding="utf-8")
-        (self.model_dir / "Dockerfile").write_text("FROM python:3.12\nWORKDIR /workspace/model\n", encoding="utf-8")
+        (self.model_dir / "Dockerfile").write_text("FROM python:3.12\nWORKDIR /model\n", encoding="utf-8")
         (self.model_dir / "config.yaml").write_text(
             "task: asr\nmodel:\n  id: demo/asr\n  backend: uv\n"
             "server:\n  command: [.venv/bin/python, server.py]\n  protocol: mcp\n"

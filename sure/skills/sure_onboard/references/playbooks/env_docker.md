@@ -19,9 +19,12 @@ The three documents must agree exactly on image tag, digest, immutable reference
 
 ## Runtime contract
 
+The `docker_validation.json.model_runtime` object must declare both `working_dir` and a non-empty `server_command`. `working_dir` is the model bundle's absolute path inside the image; it may be `/model`, `/workspace/model`, or another explicit absolute path. The Dockerfile's `WORKDIR`, `SURE_MODEL_DIR`, `MODEL_DIR`, and model-root entries in `PYTHONPATH` must use the same path when they are written as literal values. Variable expressions such as `${MODEL_ROOT}` are deferred to the digest-pinned container smoke, which must prove the resolved path at runtime. Never fall back to `/workspace/model` when the model runtime did not declare its path.
+
 `runtime_inventory.json` must expose:
 
 - `execution_mode: container_only`;
+- `container_runtime.working_dir` and `mount_policy.model_bundle.target` copied from the validated `model_runtime.working_dir`;
 - the digest-pinned image reference;
 - an explicit server command and MCP tool names;
 - model/NFS inputs mounted read-only;

@@ -314,24 +314,43 @@ def _dockerfile_runtime_settings(path: Path) -> dict[str, str]:
     return settings
 
 
+def _normalized_container_path(value: str, *, base: str | None = None) -> str | None:
+    value = value.strip()
+    if not value or "$" in value:
+        return None
+    path = PurePosixPath(value)
+    if not path.is_absolute():
+        if base is None:
+            return None
+        path = PurePosixPath(base) / path
+    return str(path)
+
+
 def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[str, Any]) -> None:
     working_dir = str(model_runtime["working_dir"])
     settings = _dockerfile_runtime_settings(dockerfile)
-    declared_workdir = settings.get("WORKDIR")
-    if declared_workdir and declared_workdir != working_dir:
+    normalized_working_dir = _normalized_container_path(working_dir)
+    declared_workdir = _normalized_container_path(settings.get("WORKDIR", ""))
+    if declared_workdir and declared_workdir != normalized_working_dir:
         raise ValueError(
-            f"Dockerfile WORKDIR {declared_workdir!r} disagrees with model_runtime.working_dir {working_dir!r}"
+            f"Dockerfile WORKDIR {settings['WORKDIR']!r} disagrees with model_runtime.working_dir {working_dir!r}"
         )
-    declared_model_dir = settings.get("SURE_MODEL_DIR")
-    if declared_model_dir and declared_model_dir != working_dir:
-        raise ValueError(
-            f"Dockerfile SURE_MODEL_DIR {declared_model_dir!r} disagrees with model_runtime.working_dir {working_dir!r}"
+    for variable in ("SURE_MODEL_DIR", "MODEL_DIR"):
+        declared_model_dir = _normalized_container_path(
+            settings.get(variable, ""), base=settings.get("WORKDIR")
         )
+        if declared_model_dir and declared_model_dir != normalized_working_dir:
+            raise ValueError(
+                f"Dockerfile {variable} {settings[variable]!r} disagrees with model_runtime.working_dir {working_dir!r}"
+            )
     declared_pythonpath = settings.get("PYTHONPATH")
     if declared_pythonpath:
-        target = PurePosixPath(working_dir)
+        target = PurePosixPath(normalized_working_dir or working_dir)
         for entry in declared_pythonpath.split(":"):
-            path = PurePosixPath(entry)
+            normalized_entry = _normalized_container_path(entry)
+            if normalized_entry is None:
+                continue
+            path = PurePosixPath(normalized_entry)
             if "model" not in path.parts:
                 continue
             try:

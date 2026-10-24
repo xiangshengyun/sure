@@ -141,7 +141,6 @@ class DockerDeliveryContractTests(unittest.TestCase):
             "runtime_separation": {"distinct_executables": True},
             "sample_output_path": str(self.sample),
             "sample_output_sha256": hashlib.sha256(self.sample.read_bytes()).hexdigest(),
-            "runtime": {"python_executable": "python", "working_dir": "/workspace/model", "server_command": ["python", "server.py"]},
         }
         self.registry = {
             "schema": "sure.onboard.docker_registry_result.v2",
@@ -310,6 +309,44 @@ class DockerDeliveryContractTests(unittest.TestCase):
         runtime = dict(self.validation["model_runtime"])
         with self.assertRaisesRegex(ValueError, "PYTHONPATH.*model_runtime.working_dir"):
             validate_container_runtime_contract(dockerfile, runtime)
+
+    def test_dockerfile_literal_paths_allow_trailing_slashes(self) -> None:
+        dockerfile = self.model_dir / "Dockerfile"
+        dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ENV SURE_MODEL_DIR=/model/ PYTHONPATH=/opt/source:/model/\n"
+            "WORKDIR /model/\n",
+            encoding="utf-8",
+        )
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        runtime["server_command"] = ["python", "/model/server.py"]
+        validate_container_runtime_contract(dockerfile, runtime)
+
+    def test_dockerfile_variable_paths_defer_to_runtime_smoke(self) -> None:
+        dockerfile = self.model_dir / "Dockerfile"
+        dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ARG MODEL_ROOT=/model\n"
+            "ENV SURE_MODEL_DIR=${MODEL_ROOT} PYTHONPATH=/opt/source:${MODEL_ROOT}\n"
+            "WORKDIR ${MODEL_ROOT}\n",
+            encoding="utf-8",
+        )
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        runtime["server_command"] = ["python", "/model/server.py"]
+        validate_container_runtime_contract(dockerfile, runtime)
+
+    def test_dockerfile_model_dir_must_match_model_runtime(self) -> None:
+        dockerfile = self.model_dir / "Dockerfile"
+        dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ENV MODEL_DIR=/model\n"
+            "WORKDIR /workspace/model\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "MODEL_DIR.*model_runtime.working_dir"):
+            validate_container_runtime_contract(dockerfile, self.validation["model_runtime"])
 
     @unittest.skipIf(os.name == "nt", "the fake docker on PATH is a POSIX shell script Windows cannot launch")
     def test_container_gate_requires_live_digest_inspect(self) -> None:

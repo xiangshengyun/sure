@@ -307,7 +307,11 @@ def _dockerfile_runtime_settings(path: Path) -> dict[str, str]:
             stage_alias = tokens[-1].lower() if len(tokens) >= 3 and tokens[-2].lower() == "as" else None
         elif name.upper() == "WORKDIR" and value.strip():
             declared = shlex.split(value)[0]
-            settings["WORKDIR"] = _normalized_container_path(declared, base=settings.get("WORKDIR")) or declared
+            # Docker resolves a relative WORKDIR against the previous one, and
+            # against "/" in a stage that has not set one yet.
+            settings["WORKDIR"] = _normalized_container_path(
+                declared, base=settings.get("WORKDIR") or "/"
+            ) or declared
         elif name.upper() == "ENV" and value.strip():
             tokens = shlex.split(value)
             index = 0
@@ -344,6 +348,7 @@ def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[st
     working_dir = str(model_runtime["working_dir"])
     settings = _dockerfile_runtime_settings(dockerfile)
     normalized_working_dir = _normalized_container_path(working_dir)
+    target = PurePosixPath(normalized_working_dir or working_dir)
     declared_workdir = _normalized_container_path(settings.get("WORKDIR", ""))
     if declared_workdir and declared_workdir != normalized_working_dir:
         raise ValueError(
@@ -351,7 +356,7 @@ def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[st
         )
     for variable in ("SURE_MODEL_DIR", "MODEL_DIR"):
         declared_model_dir = _normalized_container_path(
-            settings.get(variable, ""), base=settings.get("WORKDIR")
+            settings.get(variable, ""), base=settings.get("WORKDIR") or "/"
         )
         if declared_model_dir and declared_model_dir != normalized_working_dir:
             raise ValueError(
@@ -359,7 +364,6 @@ def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[st
             )
     declared_pythonpath = settings.get("PYTHONPATH")
     if declared_pythonpath:
-        target = PurePosixPath(normalized_working_dir or working_dir)
         for entry in declared_pythonpath.split(":"):
             normalized_entry = _normalized_container_path(entry)
             if normalized_entry is None:
@@ -373,19 +377,20 @@ def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[st
                 raise ValueError(
                     f"Dockerfile PYTHONPATH entry {entry!r} does not use model_runtime.working_dir {working_dir!r}"
                 ) from exc
+    # A command entry that names a path under some *other* model root is the
+    # same defect the working_dir check catches, one field over. Image-owned
+    # paths (/usr/local/bin/python, /opt/vendor/server.py) have no "model"
+    # segment and are left alone; the digest-pinned container smoke is what
+    # proves the resolved command actually runs.
     for item in model_runtime["server_command"]:
         candidate = _normalized_container_path(item)
-        if candidate is None:
+        if candidate is None or "model" not in PurePosixPath(candidate).parts:
             continue
-        parts = PurePosixPath(candidate).parts
-        for index, part in enumerate(parts[:-1]):
-            if part != PurePosixPath(working_dir).name:
-                continue
-            relative = Path(*parts[index + 1:])
-            if (dockerfile.parent / relative).is_file() and not PurePosixPath(candidate).is_relative_to(working_dir):
-                raise ValueError(
-                    f"model_runtime.server_command entry {item!r} disagrees with model_runtime.working_dir {working_dir!r}"
-                )
+        if PurePosixPath(candidate) == target or target in PurePosixPath(candidate).parents:
+            continue
+        raise ValueError(
+            f"model_runtime.server_command entry {item!r} disagrees with model_runtime.working_dir {working_dir!r}"
+        )
 
 
 def validate_container_documents(

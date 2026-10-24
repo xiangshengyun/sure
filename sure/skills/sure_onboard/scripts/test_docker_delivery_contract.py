@@ -386,6 +386,30 @@ class DockerDeliveryContractTests(unittest.TestCase):
         runtime["server_command"] = ["/usr/local/bin/python", "/opt/vendor/server.py"]
         validate_container_runtime_contract(self.dockerfile, runtime)
 
+    def test_a_model_root_in_server_command_is_rejected_even_when_the_basename_differs(self) -> None:
+        self.dockerfile.write_text("FROM python:3.12\nWORKDIR /opt/app\n", encoding="utf-8")
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/opt/app"
+        for command in (
+            ["python", "/workspace/model/server.py"],
+            ["python", "/workspace/model/serve.py"],
+            ["/workspace/model/.venv/bin/python", "server.py"],
+        ):
+            with self.subTest(command=command):
+                runtime["server_command"] = command
+                with self.assertRaisesRegex(ValueError, "server_command.*model_runtime.working_dir"):
+                    validate_container_runtime_contract(self.dockerfile, runtime)
+
+    def test_a_relative_workdir_in_a_fresh_stage_resolves_against_the_image_root(self) -> None:
+        self.dockerfile.write_text("FROM python:3.12\nWORKDIR model\n", encoding="utf-8")
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        runtime["server_command"] = ["python", "server.py"]
+        validate_container_runtime_contract(self.dockerfile, runtime)
+        runtime["working_dir"] = "/opt/app"
+        with self.assertRaisesRegex(ValueError, "WORKDIR.*model_runtime.working_dir"):
+            validate_container_runtime_contract(self.dockerfile, runtime)
+
     @unittest.skipIf(os.name == "nt", "the fake docker on PATH is a POSIX shell script Windows cannot launch")
     def test_container_gate_requires_live_digest_inspect(self) -> None:
         proc = self.run_script(

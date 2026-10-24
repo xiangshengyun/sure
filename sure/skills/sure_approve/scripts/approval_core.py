@@ -841,6 +841,22 @@ def verify_server_contract(candidate: Path, runtime_kind: str, binding: dict[str
         # wrapper serves MCP, and its schema is not this config's business.
         evidence["advertised"] = "config.yaml omits server.command: the harness fallback wrapper serves MCP"
         return evidence
+    if runtime_kind == "container" and isinstance(binding, dict):
+        container = binding.get("container") if isinstance(binding.get("container"), dict) else {}
+        model_mount = container.get("model_mount") if isinstance(container.get("model_mount"), dict) else {}
+        model_target = str(model_mount.get("target") or "")
+        working_dir = server.get("working_dir")
+        if isinstance(working_dir, str) and working_dir.startswith("/") and working_dir != container.get("working_dir"):
+            raise ApprovalError(
+                f"server.working_dir {working_dir!r} disagrees with approved container working_dir "
+                f"{container.get('working_dir')!r}"
+            )
+        for key in ("SURE_MODEL_DIR", "MODEL_DIR"):
+            declared = _declared_server_env(server).get(key)
+            if declared and declared.startswith("/") and declared != model_target:
+                raise ApprovalError(
+                    f"server.env.{key} {declared!r} disagrees with approved model mount {model_target!r}"
+                )
     try:
         protocol = declared_server_protocol(config, candidate)
     except ValueError as exc:
@@ -870,6 +886,74 @@ def verify_server_contract(candidate: Path, runtime_kind: str, binding: dict[str
         candidate, launch, contracts[0], server, python_runtime.get("working_dir")
     )
     return evidence
+
+
+def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[str, Any]:
+    config = load_model_config(candidate)
+    server = config.get("server") if isinstance(config.get("server"), dict) else {}
+    if not server.get("command") or declared_server_protocol(config, candidate) != MCP_SERVER_PROTOCOL:
+        return {"status": "skipped", "reason": "no declared MCP server"}
+    container = binding["container"]
+    model_target = str(container["model_mount"]["target"])
+    working_dir = str(container["working_dir"])
+    contracts = tool_contracts(config, source=f"{candidate.name}/config.yaml")
+    startup = server.get("startup_timeout_sec")
+    timeout = (float(startup) if isinstance(startup, (int, float)) and startup > 0 else 0.0) + 300.0
+    with tempfile.TemporaryDirectory(prefix="sure-approve-container-smoke-") as smoke_dir:
+        output_target = "/sure-approve-output"
+        repo_target = "/sure-approve-repo"
+        runner_root = Path(smoke_dir) / "runner"
+        output_dir = Path(smoke_dir) / "output"
+        output_dir.mkdir()
+        for relative in (
+            "sure/skills/sure_onboard/scripts/run_server_smoke.py",
+            "sure/runtime/harness/model_child_env.py",
+            "sure/runtime/prediction_payload.py",
+            "sure/runtime/evaluation/task_registry.py",
+            "sure/runtime/evaluation/engine-capabilities.generated.json",
+        ):
+            destination = runner_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO_ROOT / relative, destination)
+        produces = output_dir / "server_contract_smoke.json"
+        command = [
+            "docker", "run", "--rm", "--init",
+            "--mount", f"type=bind,src={candidate},dst={model_target},readonly",
+            "--mount", f"type=bind,src={runner_root},dst={repo_target},readonly",
+            "--mount", f"type=bind,src={output_dir},dst={output_target}",
+            "--workdir", working_dir,
+            "--env", "PYTHONDONTWRITEBYTECODE=1",
+        ]
+        if container.get("gpu_required") is True:
+            command.extend(["--gpus", "all"])
+        command.extend([
+            str(binding["target_image_ref"]), str(container["python_executable"]),
+            f"{repo_target}/sure/skills/sure_onboard/scripts/run_server_smoke.py",
+            "--server-command", json.dumps(container["server_command"]),
+            "--protocol", "mcp",
+            "--tool", contracts[0].name,
+            "--input-schema-json", json.dumps(contracts[0].input_schema),
+            "--arguments-json", "{}",
+            "--env-json", json.dumps(_declared_server_env(server)),
+            "--list-only",
+            "--cwd", working_dir,
+            "--timeout", f"{timeout:.0f}",
+            "--produces", f"{output_target}/{produces.name}",
+        ])
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout + 60.0, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise ApprovalError("candidate server timed out under the approved container mount") from exc
+        evidence = read_json(produces) if produces.is_file() else {}
+        if completed.returncode != 0 or evidence.get("status") != "passed":
+            stderr_tail = evidence.get("server_stderr_tail") or []
+            detail = "\n".join(str(line) for line in stderr_tail[-20:]) if isinstance(stderr_tail, list) else ""
+            raise ApprovalError(
+                "candidate server failed under the approved container mount: "
+                + str(evidence.get("error") or completed.stderr[-2000:] or completed.stdout[-2000:])
+                + (f"\nserver stderr:\n{detail}" if detail else "")
+            )
+        return {"status": "passed", "steps": evidence["steps"], "model_mount": model_target}
 
 
 def verify_runtime(run_dir: Path) -> dict[str, Any]:
@@ -955,10 +1039,11 @@ def verify_runtime(run_dir: Path) -> dict[str, Any]:
         smoke = {"command": command, "pull_stdout_sha256": sha256_bytes(pull.stdout.encode()), "exit_code": completed.returncode, "stdout_sha256": sha256_bytes(completed.stdout.encode()), "stderr": completed.stderr[-2000:]}
     if completed.returncode != 0:
         raise ApprovalError(f"candidate runtime verification failed: {smoke['stderr']}")
+    server_smoke = _verify_container_server(candidate, binding) if runtime_kind == "container" else None
     after, _, _ = tree_digest(candidate, publication=True)
     if after != current_digest:
         raise ApprovalError("runtime verification mutated the candidate bundle")
-    return {"schema": "sure.approve.runtime_verification.v1", "status": "passed", "verified_at": now_iso(), "runtime_kind": runtime_kind, "candidate_digest_before": current_digest, "candidate_digest_after": after, "binding": binding, "server_contract": contract, "smoke": smoke}
+    return {"schema": "sure.approve.runtime_verification.v1", "status": "passed", "verified_at": now_iso(), "runtime_kind": runtime_kind, "candidate_digest_before": current_digest, "candidate_digest_after": after, "binding": binding, "server_contract": contract, "smoke": smoke, "server_smoke": server_smoke}
 
 
 def verify_decision(review_path: Path, decision: str, rationale: str | None) -> dict[str, Any]:

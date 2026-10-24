@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import hashlib
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -181,6 +183,20 @@ class RuntimeInventoryTests(unittest.TestCase):
             json.loads((self.artifacts / "runtime_inventory.json").read_text())["harness_runtime"]["runtime_root"],
             "/opt/sure-harness/test",
         )
+
+    def test_inventory_gate_rejects_working_dir_mount_mismatch(self) -> None:
+        output = self.run_artifacts / "runtime_inventory.json"
+        inventory = write_inventory(self.model_dir, output, self.run_dir)
+        inventory["container_runtime"]["mount_policy"]["model_bundle"]["target"] = "/workspace/model"
+        write_json(output, inventory)
+        write_json(self.artifacts / "runtime_inventory.json", inventory)
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("check_runtime_inventory.py")),
+             "--run-dir", str(self.run_dir), "--produces", str(output)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("container working_dir must match model bundle mount target", result.stderr)
 
     def test_missing_package_gate_blocks_inventory(self) -> None:
         (self.artifacts / "package_gate.json").unlink()

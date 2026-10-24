@@ -348,6 +348,44 @@ class DockerDeliveryContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "MODEL_DIR.*model_runtime.working_dir"):
             validate_container_runtime_contract(dockerfile, self.validation["model_runtime"])
 
+    def test_build_stage_environment_does_not_pollute_final_image(self) -> None:
+        self.dockerfile.write_text(
+            "FROM python:3.12 AS build\nENV MODEL_DIR=/build\nWORKDIR /build\n"
+            "FROM python:3.12\nWORKDIR /workspace/model\n",
+            encoding="utf-8",
+        )
+        validate_container_runtime_contract(self.dockerfile, self.validation["model_runtime"])
+
+    def test_final_stage_inherits_named_stage_environment(self) -> None:
+        self.dockerfile.write_text(
+            "FROM python:3.12 AS base\nENV MODEL_DIR=/model\nWORKDIR /model\n"
+            "FROM base AS final\nRUN true\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "WORKDIR.*model_runtime.working_dir"):
+            validate_container_runtime_contract(self.dockerfile, self.validation["model_runtime"])
+
+    def test_relative_workdir_is_resolved_and_normalized(self) -> None:
+        self.dockerfile.write_text(
+            "FROM python:3.12\nWORKDIR /workspace/tmp\nWORKDIR ../model\n",
+            encoding="utf-8",
+        )
+        validate_container_runtime_contract(self.dockerfile, self.validation["model_runtime"])
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        with self.assertRaisesRegex(ValueError, "WORKDIR.*model_runtime.working_dir"):
+            validate_container_runtime_contract(self.dockerfile, runtime)
+
+    def test_misplaced_bundle_server_script_is_rejected_but_image_python_is_allowed(self) -> None:
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        runtime["server_command"] = ["/usr/local/bin/python", "/workspace/model/server.py"]
+        self.dockerfile.write_text("FROM python:3.12\nWORKDIR /model\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "server_command.*model_runtime.working_dir"):
+            validate_container_runtime_contract(self.dockerfile, runtime)
+        runtime["server_command"] = ["/usr/local/bin/python", "/opt/vendor/server.py"]
+        validate_container_runtime_contract(self.dockerfile, runtime)
+
     @unittest.skipIf(os.name == "nt", "the fake docker on PATH is a POSIX shell script Windows cannot launch")
     def test_container_gate_requires_live_digest_inspect(self) -> None:
         proc = self.run_script(

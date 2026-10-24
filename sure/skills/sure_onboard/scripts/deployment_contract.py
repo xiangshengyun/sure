@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 import re
 import shlex
 import sys
@@ -293,10 +294,20 @@ def _dockerfile_instructions(path: Path) -> list[str]:
 
 def _dockerfile_runtime_settings(path: Path) -> dict[str, str]:
     settings: dict[str, str] = {}
+    stages: dict[str, dict[str, str]] = {}
+    stage_alias: str | None = None
     for instruction in _dockerfile_instructions(path):
         name, _, value = instruction.partition(" ")
-        if name.upper() == "WORKDIR" and value.strip():
-            settings["WORKDIR"] = shlex.split(value)[0]
+        if name.upper() == "FROM":
+            if stage_alias is not None:
+                stages[stage_alias] = settings.copy()
+            tokens = shlex.split(value)
+            base = next((token for token in tokens if not token.startswith("--")), "")
+            settings = stages.get(base.lower(), {}).copy()
+            stage_alias = tokens[-1].lower() if len(tokens) >= 3 and tokens[-2].lower() == "as" else None
+        elif name.upper() == "WORKDIR" and value.strip():
+            declared = shlex.split(value)[0]
+            settings["WORKDIR"] = _normalized_container_path(declared, base=settings.get("WORKDIR")) or declared
         elif name.upper() == "ENV" and value.strip():
             tokens = shlex.split(value)
             index = 0
@@ -322,8 +333,11 @@ def _normalized_container_path(value: str, *, base: str | None = None) -> str | 
     if not path.is_absolute():
         if base is None:
             return None
-        path = PurePosixPath(base) / path
-    return str(path)
+        base_path = PurePosixPath(base)
+        if not base_path.is_absolute() or "$" in base:
+            return None
+        path = base_path / path
+    return posixpath.normpath(str(path))
 
 
 def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[str, Any]) -> None:
@@ -359,6 +373,19 @@ def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[st
                 raise ValueError(
                     f"Dockerfile PYTHONPATH entry {entry!r} does not use model_runtime.working_dir {working_dir!r}"
                 ) from exc
+    for item in model_runtime["server_command"]:
+        candidate = _normalized_container_path(item)
+        if candidate is None:
+            continue
+        parts = PurePosixPath(candidate).parts
+        for index, part in enumerate(parts[:-1]):
+            if part != PurePosixPath(working_dir).name:
+                continue
+            relative = Path(*parts[index + 1:])
+            if (dockerfile.parent / relative).is_file() and not PurePosixPath(candidate).is_relative_to(working_dir):
+                raise ValueError(
+                    f"model_runtime.server_command entry {item!r} disagrees with model_runtime.working_dir {working_dir!r}"
+                )
 
 
 def validate_container_documents(

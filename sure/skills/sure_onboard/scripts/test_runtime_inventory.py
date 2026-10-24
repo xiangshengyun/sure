@@ -87,6 +87,8 @@ class RuntimeInventoryTests(unittest.TestCase):
                     "runtime_type": "model_python",
                     "python_executable": "python",
                     "python_version": "3.12.4",
+                    "working_dir": "/model",
+                    "server_command": ["python", "/model/server.py"],
                     "checks": {name: True for name in ("import", "load", "infer", "contract", "bounded_fixture_inference")},
                 },
                 "harness_runtime": {
@@ -112,11 +114,6 @@ class RuntimeInventoryTests(unittest.TestCase):
                     },
                 },
                 "runtime_separation": {"distinct_executables": True},
-                "runtime": {
-                    "python_executable": "python",
-                    "working_dir": "/workspace/model",
-                    "server_command": ["python", "server.py"],
-                },
             },
         )
         write_json(
@@ -162,6 +159,9 @@ class RuntimeInventoryTests(unittest.TestCase):
             inventory["model_runtime"]["python_executable"],
             inventory["harness_runtime"]["python_executable"],
         )
+        self.assertEqual(inventory["container_runtime"]["working_dir"], "/model")
+        self.assertEqual(inventory["container_runtime"]["server_command"], ["python", "/model/server.py"])
+        self.assertEqual(inventory["container_runtime"]["mount_policy"]["model_bundle"]["target"], "/model")
         self.assertTrue(inventory["container_runtime"]["target_image_ref"].endswith("@sha256:" + "a" * 64))
         self.assertEqual(inventory["container_runtime"]["tool_names"], ["asr_transcribe"])
         self.assertEqual(output.read_bytes(), (self.artifacts / "runtime_inventory.json").read_bytes())

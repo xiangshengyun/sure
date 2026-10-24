@@ -141,8 +141,8 @@ def build_inventory(model_dir: Path, run_dir: Path) -> dict[str, Any]:
         validation = load_model_artifact(model_dir, "docker_validation.json")
         registry = load_model_artifact(model_dir, "docker_registry_result.json")
         image, digest, image_ref = validate_container_documents(build, validation, registry)
-        runtime = validation.get("runtime") if isinstance(validation.get("runtime"), dict) else {}
         validated_model_runtime, validated_harness_runtime = validate_runtime_roles(validation)
+        runtime = validated_model_runtime
         model_runtime = {
             "required": True,
             "runtime_type": "model_python",

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import posixpath
 import subprocess
 import sys
 from pathlib import Path
@@ -20,12 +21,13 @@ from deployment_contract import (
     resolve_model_dir,
     sha256_file,
     validate_container_documents,
+    validate_container_runtime_contract,
     validate_image_and_digest,
     validate_runtime_roles,
 )
 
 
-def verify_live_image(docker_bin: str, image_ref: str) -> None:
+def verify_live_image(docker_bin: str, image_ref: str, expected_working_dir: str | None = None) -> None:
     proc = subprocess.run(
         [docker_bin, "image", "inspect", image_ref, "--format", "{{json .RepoDigests}}"],
         capture_output=True,
@@ -42,6 +44,22 @@ def verify_live_image(docker_bin: str, image_ref: str) -> None:
         raise ValueError("docker image inspect did not return RepoDigests JSON") from exc
     if not isinstance(repo_digests, list) or image_ref not in repo_digests:
         raise ValueError(f"docker image inspect RepoDigests does not contain {image_ref}")
+    if expected_working_dir is not None:
+        workdir_probe = subprocess.run(
+            [docker_bin, "image", "inspect", image_ref, "--format", "{{json .Config.WorkingDir}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if workdir_probe.returncode != 0:
+            raise ValueError(f"digest-pinned image WORKDIR is not inspectable: {(workdir_probe.stderr or workdir_probe.stdout).strip()}")
+        try:
+            actual_working_dir = json.loads(workdir_probe.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValueError("docker image inspect did not return Config.WorkingDir JSON") from exc
+        if not isinstance(actual_working_dir, str) or posixpath.normpath(actual_working_dir) != posixpath.normpath(expected_working_dir):
+            raise ValueError(f"digest-pinned image WORKDIR {actual_working_dir!r} disagrees with model_runtime.working_dir {expected_working_dir!r}")
 
 
 def verify_live_runtimes(
@@ -137,8 +155,9 @@ def main() -> int:
             expected_runtime_id=os.environ.get("SURE_HARNESS_RUNTIME_ID") or None,
             expected_lock_sha256=os.environ.get("SURE_HARNESS_LOCK_SHA256") or None,
         )
+        declared_workdir = validate_container_runtime_contract(dockerfile, model_runtime)
         docker_bin = resolve_docker_binary()
-        verify_live_image(docker_bin, image_ref)
+        verify_live_image(docker_bin, image_ref, str(model_runtime["working_dir"]) if declared_workdir else None)
         verify_live_runtimes(docker_bin, image_ref, model_runtime, harness_runtime)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"PACKAGE_CONTAINER failed: {exc}", file=sys.stderr)

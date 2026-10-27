@@ -64,6 +64,10 @@ def main() -> int:
             mounts = container.get("mount_policy") if isinstance(container.get("mount_policy"), dict) else {}
             if mounts.get("nfs_models_read_only") is not True:
                 raise ValueError("container runtime must declare nfs_models_read_only=true")
+            model_mount = mounts.get("model_bundle") if isinstance(mounts.get("model_bundle"), dict) else {}
+            working_dir = container.get("working_dir")
+            if not isinstance(working_dir, str) or not working_dir.startswith("/") or model_mount.get("target") != working_dir:
+                raise ValueError("container working_dir must match model bundle mount target")
             if not container.get("server_command") or not container.get("tool_names"):
                 raise ValueError("container runtime must declare server_command and tool_names")
             model_runtime = data.get("model_runtime") if isinstance(data.get("model_runtime"), dict) else {}

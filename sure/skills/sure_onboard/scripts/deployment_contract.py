@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 import re
+import shlex
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
@@ -265,6 +267,15 @@ def validate_runtime_roles(
     harness_python = str(harness.get("python_executable") or "")
     if not model_python or not harness_python or model_python == harness_python:
         raise ValueError("Harness Python and Model Python must be non-empty and distinct")
+    working_dir = model.get("working_dir")
+    if not isinstance(working_dir, str) or not PurePosixPath(working_dir).is_absolute():
+        raise ValueError("docker_validation.json model_runtime.working_dir must be an absolute container path")
+    server_command = model.get("server_command")
+    if not isinstance(server_command, list) or not server_command or not all(isinstance(item, str) and item for item in server_command):
+        raise ValueError("docker_validation.json model_runtime.server_command must be a non-empty string list")
+    external_paths = model.get("external_command_paths", [])
+    if not isinstance(external_paths, list) or not all(isinstance(item, str) and PurePosixPath(item).is_absolute() for item in external_paths):
+        raise ValueError("docker_validation.json model_runtime.external_command_paths must contain absolute container paths")
     harness = normalize_harness_runtime(harness)
     harness_python = str(harness.get("python_executable") or "")
     if not str(harness.get("runtime_id") or "") or not str(harness.get("lock_sha256") or ""):
@@ -284,6 +295,119 @@ def validate_runtime_roles(
     if failed_harness:
         raise ValueError("docker_validation.json has failed Harness Runtime checks: " + ", ".join(failed_harness))
     return model, harness
+
+
+def _dockerfile_instructions(path: Path) -> list[str]:
+    logical_lines: list[str] = []
+    pending = ""
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.endswith("\\"):
+            pending += line[:-1].rstrip() + " "
+            continue
+        logical_lines.append(pending + line)
+        pending = ""
+    if pending:
+        logical_lines.append(pending.rstrip())
+    return logical_lines
+
+
+def _dockerfile_runtime_settings(path: Path) -> dict[str, str]:
+    settings: dict[str, str] = {}
+    stages: dict[str, dict[str, str]] = {}
+    stage_alias: str | None = None
+    for instruction in _dockerfile_instructions(path):
+        name, _, value = instruction.partition(" ")
+        if name.upper() == "FROM":
+            if stage_alias is not None:
+                stages[stage_alias] = settings.copy()
+            tokens = shlex.split(value)
+            base = next((token for token in tokens if not token.startswith("--")), "")
+            settings = stages.get(base.lower(), {}).copy()
+            stage_alias = tokens[-1].lower() if len(tokens) >= 3 and tokens[-2].lower() == "as" else None
+        elif name.upper() == "WORKDIR" and value.strip():
+            declared = shlex.split(value)[0]
+            settings["WORKDIR"] = _normalized_container_path(
+                declared, base=settings.get("WORKDIR")
+            ) or declared
+        elif name.upper() == "ENV" and value.strip():
+            tokens = shlex.split(value)
+            index = 0
+            while index < len(tokens):
+                token = tokens[index]
+                if "=" in token:
+                    key, env_value = token.split("=", 1)
+                    settings[key] = env_value
+                    index += 1
+                elif index + 1 < len(tokens):
+                    settings[token] = tokens[index + 1]
+                    index += 2
+                else:
+                    index += 1
+    return settings
+
+
+def _normalized_container_path(value: str, *, base: str | None = None) -> str | None:
+    value = value.strip()
+    if not value or "$" in value:
+        return None
+    path = PurePosixPath(value)
+    if not path.is_absolute():
+        if base is None:
+            return None
+        base_path = PurePosixPath(base)
+        if not base_path.is_absolute() or "$" in base:
+            return None
+        path = base_path / path
+    return posixpath.normpath(str(path))
+
+
+def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[str, Any]) -> str | None:
+    working_dir = str(model_runtime["working_dir"])
+    settings = _dockerfile_runtime_settings(dockerfile)
+    normalized_working_dir = _normalized_container_path(working_dir)
+    target = PurePosixPath(normalized_working_dir or working_dir)
+    declared_workdir = _normalized_container_path(settings.get("WORKDIR", ""))
+    if declared_workdir and declared_workdir != normalized_working_dir:
+        raise ValueError(
+            f"Dockerfile WORKDIR {settings['WORKDIR']!r} disagrees with model_runtime.working_dir {working_dir!r}"
+        )
+    for variable in ("SURE_MODEL_DIR", "MODEL_DIR"):
+        declared_model_dir = _normalized_container_path(
+            settings.get(variable, ""), base=settings.get("WORKDIR")
+        )
+        if declared_model_dir and declared_model_dir != normalized_working_dir:
+            raise ValueError(
+                f"Dockerfile {variable} {settings[variable]!r} disagrees with model_runtime.working_dir {working_dir!r}"
+            )
+    declared_pythonpath = settings.get("PYTHONPATH")
+    if declared_pythonpath:
+        for entry in declared_pythonpath.split(":"):
+            normalized_entry = _normalized_container_path(entry)
+            if normalized_entry is None:
+                continue
+            path = PurePosixPath(normalized_entry)
+            if "model" not in path.parts:
+                continue
+            try:
+                path.relative_to(target)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Dockerfile PYTHONPATH entry {entry!r} does not use model_runtime.working_dir {working_dir!r}"
+                ) from exc
+    external_paths = {_normalized_container_path(item) for item in model_runtime.get("external_command_paths", [])}
+    for item in model_runtime["server_command"]:
+        candidate = _normalized_container_path(item)
+        if candidate is None:
+            continue
+        if candidate in external_paths or PurePosixPath(candidate) == target or target in PurePosixPath(candidate).parents:
+            continue
+        raise ValueError(
+            f"model_runtime.server_command entry {item!r} disagrees with model_runtime.working_dir {working_dir!r}"
+        )
+    return settings.get("WORKDIR")
 
 
 def validate_container_documents(

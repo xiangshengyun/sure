@@ -714,6 +714,30 @@ def load_model_config(model_dir: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _refuse_renamed_bundle_root(entry: str, model_target: str, label: str) -> None:
+    """Refuse an env path that reaches this bundle through a root deployment renames.
+
+    A bundle that imports its own code from a hardcoded root works on the host
+    that built it and fails at import time once deployment mounts it elsewhere --
+    the same defect as a hardcoded `SURE_MODEL_DIR`, one level down. Image
+    entries (`/usr/local/lib/...`, `/opt/...`) are legitimate, so only a second
+    spelling of the mount's own last segment (`/model` beside `/workspace/model`)
+    is refused.
+
+    ponytail: matched on the first segment only. A renamed root spelled deeper
+    goes through here; the container smoke is what catches that.
+    """
+    root = PurePosixPath(model_target)
+    parts = PurePosixPath(entry).parts
+    if len(parts) < 2 or parts[1] != root.name:
+        return
+    spelled = root if len(parts) == 2 else root.joinpath(*parts[2:])
+    raise ApprovalError(
+        f"server.env.{label} entry {entry!r} names the model bundle by a root deployment does "
+        f"not mount; the bundle is mounted at {model_target!r}, so write it as {str(spelled)!r}"
+    )
+
+
 def _declared_server_env(server: dict[str, Any]) -> dict[str, str]:
     """The `server.env` config.yaml declares, as the infer client applies it.
 
@@ -848,6 +872,35 @@ def verify_server_contract(candidate: Path, runtime_kind: str, binding: dict[str
         # server has no tool contract of its own to check. The harness fallback
         # wrapper serves MCP, and its schema is not this config's business.
         evidence["advertised"] = "config.yaml omits server.command: the harness fallback wrapper serves MCP"
+    if runtime_kind == "container" and isinstance(binding, dict):
+        container = binding.get("container") if isinstance(binding.get("container"), dict) else {}
+        model_mount = container.get("model_mount") if isinstance(container.get("model_mount"), dict) else {}
+        model_target = str(model_mount.get("target") or "")
+        working_dir = server.get("working_dir")
+        if isinstance(working_dir, str) and working_dir.startswith("/") and working_dir != container.get("working_dir"):
+            raise ApprovalError(
+                f"server.working_dir {working_dir!r} disagrees with approved container working_dir "
+                f"{container.get('working_dir')!r}"
+            )
+        for key in ("SURE_MODEL_DIR", "MODEL_DIR"):
+            declared = _declared_server_env(server).get(key)
+            if declared and declared.startswith("/") and declared != model_target:
+                raise ApprovalError(
+                    f"server.env.{key} {declared!r} disagrees with approved model mount {model_target!r}"
+                )
+        # `PYTHONPATH`/`PYTHONHOME` are the other half of the same mistake: a
+        # bundle that imports its own modules from a hardcoded root works on the
+        # host that built it and fails at import time once deployment mounts it
+        # elsewhere. An entry already spelled under the mount passes, and so does
+        # an image-provided one -- only a path that reaches this bundle through
+        # another root is refused.
+        declared_env = _declared_server_env(server)
+        for key in ("PYTHONPATH", "PYTHONHOME"):
+            raw = declared_env.get(key, "")
+            entries = raw.split(":") if key == "PYTHONPATH" else [raw]
+            for entry in entries:
+                if entry.startswith("/") and not entry.startswith(model_target + "/") and entry != model_target:
+                    _refuse_renamed_bundle_root(entry, model_target, key)
     try:
         protocol = declared_server_protocol(config, candidate)
     except ValueError as exc:
@@ -894,6 +947,227 @@ def verify_server_contract(candidate: Path, runtime_kind: str, binding: dict[str
         candidate, launch, tool_name, input_schema, server, python_runtime.get("working_dir")
     )
     return evidence
+
+
+def _container_argument(value: str, roots: list[Path], model_target: str, field: str) -> str:
+    """Rewrite a fixture path from its host spelling into the mount the container sees.
+
+    The manifest records the paths the onboarding host used, and the candidate is
+    a copy sealed elsewhere, so the bundle root is taken from the manifest's own
+    `model_dir`/`staged_dir` rather than from wherever the copy now sits.
+    """
+    path = Path(value).resolve()
+    for root in roots:
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        return str(PurePosixPath(model_target) / PurePosixPath(relative.as_posix()))
+    raise ApprovalError(
+        f"fixture input {field!r} names {value!r}, which the bundle's own manifest does not "
+        f"place inside the model directory; the container mounts only the bundle, at {model_target!r}"
+    )
+
+
+def _is_output_argument(name: str) -> bool:
+    """A required input that names where the model writes, not what it reads.
+
+    The client owns these: inference makes its own scratch path for every output
+    a tool declares, so no bundle records one and no fixture can supply one.
+    """
+    lower = name.lower()
+    return ("output" in lower or lower.startswith("out_")) and lower.endswith(
+        ("_path", "path", "_file", "file", "_dir", "dir")
+    )
+
+
+def _smoke_output_path(name: str, output_target: str, suffix: str) -> str:
+    """A writable path for a required output argument the bundle cannot supply.
+
+    Inference hands the server its own scratch path for every output the tool
+    declares, so the smoke gives it one under the writable mount rather than
+    asking the bundle for a file that does not exist yet. A directory-shaped
+    argument gets the mount root, which is the only directory that is sure to
+    exist inside the image.
+    """
+    if name.lower().endswith(("_dir", "dir")):
+        return str(PurePosixPath(output_target))
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name) or "output"
+    return str(PurePosixPath(output_target) / f"smoke_{safe}{suffix}")
+
+
+def _fixture_arguments(
+    candidate: Path, contract: Any, model_target: str, output_target: str
+) -> dict[str, str] | None:
+    """The arguments the container smoke calls the tool with, taken from the bundle.
+
+    `--list-only` proves the server starts and advertises a contract; it does not
+    prove the tool answers. A model that loads its weights on the first call, or
+    resolves them relative to the mount, passes that and fails at inference --
+    which is the failure this smoke exists to catch, so the call is made whenever
+    the bundle can drive one.
+
+    Every bundle carries `artifacts/fixture_manifest.json` (a mandatory sidecar),
+    and its paths are spelled against the host that onboarded the bundle, so each
+    one is rewritten into the mount the container will see.
+
+    Every required field the fixture fills is sent, not just the first: a call
+    missing a field the tool's own contract calls mandatory proves nothing, and
+    a tool with two inputs (SE's noisy and reference audio) would be driven with
+    one. A required *output* field is synthesized under the writable mount, since
+    inference does the same and the bundle never records one.
+
+    Returns None when the tool takes an input no fixture supplies -- a TTS prompt,
+    say. Onboard drives those from an authored `server_smoke_input.json` that
+    lives in the transient run directory and never reaches the bundle, so refusing
+    here would reject every such model. The caller falls back to `--list-only` and
+    records that this smoke could not load weights, rather than passing silently.
+    A required *input* the fixture cannot fill is still refused: that bundle is
+    one onboarding could drive, so refusing it here is a defect in the bundle.
+    """
+    manifest_path = candidate / "artifacts" / "fixture_manifest.json"
+    manifest = read_json(manifest_path) if manifest_path.is_file() else {}
+    roots = []
+    for key in ("model_dir", "staged_dir"):
+        raw = manifest.get(key)
+        if isinstance(raw, str) and raw:
+            roots.append(Path(raw).expanduser().resolve())
+    roots.append(candidate.resolve())
+    samples = manifest.get("samples")
+    sample = samples[0] if isinstance(samples, list) and samples and isinstance(samples[0], dict) else {}
+    roles = sample.get("audio_roles") if isinstance(sample.get("audio_roles"), dict) else {}
+    props = list(contract.properties)
+    required = contract.required
+
+    def supplied(name: str) -> str:
+        value = roles.get(name)
+        if isinstance(value, str) and value:
+            return value
+        fallback = sample.get("audio_path") if name == "audio_path" else None
+        return fallback if isinstance(fallback, str) and fallback else ""
+
+    if not any(supplied(name) for name in [*required, *props]):
+        return None
+    # The suffix the model writes is its own to declare, not something to read
+    # off whichever field happened to fill first: an SE fixture's first fillable
+    # field can be a `.mp3` prompt while the output is `.wav`. The sample's own
+    # audio is the statement the bundle makes about its media type.
+    sample_audio = sample.get("audio_path")
+    suffix = Path(sample_audio).suffix if isinstance(sample_audio, str) and sample_audio else ".wav"
+    arguments: dict[str, str] = {}
+    missing: list[str] = []
+    for name in required:
+        if supplied(name):
+            arguments[name] = _container_argument(supplied(name), roots, model_target, name)
+        elif _is_output_argument(name):
+            arguments[name] = _smoke_output_path(name, output_target, suffix)
+        else:
+            missing.append(name)
+    if missing:
+        # A required field the fixture cannot fill is usually an output the
+        # client owns under a name this smoke does not recognise. Naming the
+        # convention is the fix a producer can act on; refusing with "rerun
+        # onboard" alone would point at a fixture that can never hold one.
+        hint = (
+            " If any of these is a path the caller writes, declare it as output_path "
+            "(or output_dir) so the smoke can synthesize it under the writable mount."
+            if any("path" in name.lower() or "file" in name.lower() or "dir" in name.lower() for name in missing)
+            else ""
+        )
+        raise ApprovalError(
+            f"the approved bundle's fixture supplies no value for the required tool input(s) "
+            f"{', '.join(missing)}; rerun /sure_onboard with a fixture that fills them.{hint}"
+        )
+    if not arguments:
+        # A contract that requires nothing is driven with whatever the fixture
+        # does supply, which is the audio the tool was built to read.
+        name = next(name for name in [*required, *props] if supplied(name))
+        arguments[name] = _container_argument(supplied(name), roots, model_target, name)
+    return arguments
+
+
+def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[str, Any]:
+    config = load_model_config(candidate)
+    server = config.get("server") if isinstance(config.get("server"), dict) else {}
+    if not server.get("command") or declared_server_protocol(config, candidate) != MCP_SERVER_PROTOCOL:
+        return {"status": "skipped", "reason": "no declared MCP server"}
+    container = binding["container"]
+    model_target = str(container["model_mount"]["target"])
+    working_dir = str(container["working_dir"])
+    output_target = "/sure-approve-output"
+    contracts = tool_contracts(config, source=f"{candidate.name}/config.yaml")
+    arguments = _fixture_arguments(candidate, contracts[0], model_target, output_target)
+    startup = server.get("startup_timeout_sec")
+    timeout = (float(startup) if isinstance(startup, (int, float)) and startup > 0 else 0.0) + 300.0
+    with tempfile.TemporaryDirectory(prefix="sure-approve-container-smoke-") as smoke_dir:
+        repo_target = "/sure-approve-repo"
+        runner_root = Path(smoke_dir) / "runner"
+        output_dir = Path(smoke_dir) / "output"
+        output_dir.mkdir()
+        for relative in (
+            "sure/skills/sure_onboard/scripts/run_server_smoke.py",
+            "sure/runtime/harness/model_child_env.py",
+            "sure/runtime/prediction_payload.py",
+            "sure/runtime/evaluation/task_registry.py",
+            "sure/runtime/evaluation/engine-capabilities.generated.json",
+        ):
+            destination = runner_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO_ROOT / relative, destination)
+        produces = output_dir / "server_contract_smoke.json"
+        # The model's declared env, over the two the launcher sets: a server that
+        # resolves its weights from MODEL_DIR, or writes an output under RUN_DIR,
+        # is the shape inference gives it, and it must be the shape it is smoked
+        # under -- RUN_DIR is the writable mount because the bundle's own is
+        # read-only here, exactly as it is at inference.
+        smoke_env = {**_declared_server_env(server), "MODEL_DIR": model_target, "RUN_DIR": output_target}
+        command = [
+            "docker", "run", "--rm", "--init",
+            "--mount", f"type=bind,src={candidate},dst={model_target},readonly",
+            "--mount", f"type=bind,src={runner_root},dst={repo_target},readonly",
+            "--mount", f"type=bind,src={output_dir},dst={output_target}",
+            "--workdir", working_dir,
+            "--env", "PYTHONDONTWRITEBYTECODE=1",
+        ]
+        if container.get("gpu_required") is True:
+            command.extend(["--gpus", "all"])
+        command.extend([
+            str(binding["target_image_ref"]), str(container["python_executable"]),
+            f"{repo_target}/sure/skills/sure_onboard/scripts/run_server_smoke.py",
+            "--server-command", json.dumps(container["server_command"]),
+            "--protocol", "mcp",
+            "--tool", contracts[0].name,
+            "--input-schema-json", json.dumps(contracts[0].input_schema),
+            "--arguments-json", json.dumps(arguments or {}),
+            "--env-json", json.dumps(smoke_env),
+            *([] if arguments else ["--list-only"]),
+            "--cwd", working_dir,
+            "--timeout", f"{timeout:.0f}",
+            "--produces", f"{output_target}/{produces.name}",
+        ])
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout + 60.0, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise ApprovalError("candidate server timed out under the approved container mount") from exc
+        evidence = read_json(produces) if produces.is_file() else {}
+        if completed.returncode != 0 or evidence.get("status") != "passed":
+            stderr_tail = evidence.get("server_stderr_tail") or []
+            detail = "\n".join(str(line) for line in stderr_tail[-20:]) if isinstance(stderr_tail, list) else ""
+            raise ApprovalError(
+                "candidate server failed under the approved container mount: "
+                + str(evidence.get("error") or completed.stderr[-2000:] or completed.stdout[-2000:])
+                + (f"\nserver stderr:\n{detail}" if detail else "")
+            )
+        return {
+            "status": "passed",
+            "steps": evidence["steps"],
+            "model_mount": model_target,
+            # A list-only pass proves startup and the advertised contract, not
+            # that the tool answers; say which one this was so a reviewer does not
+            # read it as a weight load.
+            "called_tool": arguments is not None,
+            "arguments": arguments or {},
+        }
 
 
 def verify_runtime(run_dir: Path) -> dict[str, Any]:
@@ -1002,10 +1276,11 @@ def verify_runtime(run_dir: Path) -> dict[str, Any]:
         smoke = {"command": command, "pull_stdout_sha256": sha256_bytes(pull.stdout.encode()), "exit_code": completed.returncode, "stdout_sha256": sha256_bytes(completed.stdout.encode()), "stderr": completed.stderr[-2000:]}
     if completed.returncode != 0:
         raise ApprovalError(f"candidate runtime verification failed: {smoke['stderr']}")
+    server_smoke = _verify_container_server(candidate, binding) if runtime_kind == "container" else None
     after, _, _ = tree_digest(candidate, publication=True)
     if after != current_digest:
         raise ApprovalError("runtime verification mutated the candidate bundle")
-    return {"schema": "sure.approve.runtime_verification.v1", "status": "passed", "verified_at": now_iso(), "runtime_kind": runtime_kind, "candidate_digest_before": current_digest, "candidate_digest_after": after, "binding": binding, "server_contract": contract, "smoke": smoke}
+    return {"schema": "sure.approve.runtime_verification.v1", "status": "passed", "verified_at": now_iso(), "runtime_kind": runtime_kind, "candidate_digest_before": current_digest, "candidate_digest_after": after, "binding": binding, "server_contract": contract, "smoke": smoke, "server_smoke": server_smoke}
 
 
 def verify_decision(review_path: Path, decision: str, rationale: str | None) -> dict[str, Any]:

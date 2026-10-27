@@ -65,7 +65,7 @@ class ContainerValidationMountTests(unittest.TestCase):
                 )
                 observed["copied_files"] = sorted(path.name for path in validation_source.iterdir())
                 observed["modes"] = {
-                    str(path.relative_to(validation_source)): stat.S_IMODE(path.stat().st_mode)
+                    path.relative_to(validation_source).as_posix(): stat.S_IMODE(path.stat().st_mode)
                     for path in validation_source.rglob("*")
                 }
                 return mock.Mock(returncode=0, stdout="", stderr="")
@@ -74,9 +74,11 @@ class ContainerValidationMountTests(unittest.TestCase):
                 mock.patch.object(approval_core, "tree_digest", return_value=("digest", [], [])),
                 mock.patch.object(approval_core, "load_deployment_binding", return_value=binding),
                 mock.patch.object(approval_core, "verify_server_contract", return_value={"status": "passed"}),
+                mock.patch.object(approval_core, "_verify_container_server", return_value={"status": "passed"}) as server_smoke,
                 mock.patch.object(approval_core.subprocess, "run", side_effect=run),
             ):
                 result = approval_core.verify_runtime(run_dir)
+            server_smoke.assert_called_once_with(candidate.resolve(), binding)
             return candidate, result, observed
 
     def test_validate_smoke_overlays_writable_copy_of_artifacts(self) -> None:

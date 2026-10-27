@@ -352,6 +352,34 @@ class DockerDeliveryContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "MODEL_DIR.*model_runtime.working_dir"):
             validate_container_runtime_contract(dockerfile, self.validation["model_runtime"])
 
+    def test_dockerfile_model_path_must_stay_inside_model_runtime(self) -> None:
+        self.dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ENV MODEL_PATH=/model/checkpoints\n"
+            "WORKDIR /workspace/model\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "MODEL_PATH.*model_runtime.working_dir"):
+            validate_container_runtime_contract(self.dockerfile, self.validation["model_runtime"])
+
+    def test_dockerfile_model_path_may_name_a_subdirectory(self) -> None:
+        self.dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ENV MODEL_PATH=/workspace/model/checkpoints\n"
+            "WORKDIR /workspace/model\n",
+            encoding="utf-8",
+        )
+        validate_container_runtime_contract(self.dockerfile, self.validation["model_runtime"])
+
+    def test_dockerfile_relative_model_path_resolves_under_working_dir(self) -> None:
+        self.dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ENV MODEL_PATH=checkpoints\n"
+            "WORKDIR /workspace/model\n",
+            encoding="utf-8",
+        )
+        validate_container_runtime_contract(self.dockerfile, self.validation["model_runtime"])
+
     def test_build_stage_environment_does_not_pollute_final_image(self) -> None:
         self.dockerfile.write_text(
             "FROM python:3.12 AS build\nENV MODEL_DIR=/build\nWORKDIR /build\n"

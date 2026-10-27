@@ -382,6 +382,20 @@ def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[st
             raise ValueError(
                 f"Dockerfile {variable} {settings[variable]!r} disagrees with model_runtime.working_dir {working_dir!r}"
             )
+    # MODEL_PATH names the weights, which normally sit in a subdirectory of the
+    # bundle (/workspace/model/checkpoints), so containment is the contract
+    # rather than equality. An image that bakes a path outside the mount
+    # shadows the mounted bundle with an empty built-in directory and only
+    # fails at inference, where neither the run nor the binding may override it.
+    declared_model_path = _normalized_container_path(
+        settings.get("MODEL_PATH", ""), base=settings.get("WORKDIR")
+    )
+    if declared_model_path:
+        resolved_model_path = PurePosixPath(declared_model_path)
+        if resolved_model_path != target and target not in resolved_model_path.parents:
+            raise ValueError(
+                f"Dockerfile MODEL_PATH {settings['MODEL_PATH']!r} disagrees with model_runtime.working_dir {working_dir!r}"
+            )
     declared_pythonpath = settings.get("PYTHONPATH")
     if declared_pythonpath:
         for entry in declared_pythonpath.split(":"):

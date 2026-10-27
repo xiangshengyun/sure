@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,11 +50,12 @@ class ContainerServerSmokeTests(unittest.TestCase):
             },
         }
 
-    def config(self, *, working_dir: str = "/workspace/model", model_dir: str = "/workspace/model", extra_env: str = "") -> None:
+    def config(self, *, working_dir: str = "/workspace/model", model_dir: str = "/workspace/model", extra_env: str = "", protocol: str = "mcp", task: str = "asr") -> None:
         (self.candidate / "config.yaml").write_text(
+            f"task: {task}\n"
             "server:\n"
             "  command: [python, server.py]\n"
-            "  protocol: mcp\n"
+            f"  protocol: {protocol}\n"
             f"  working_dir: {working_dir}\n"
             "  env:\n"
             f"    SURE_MODEL_DIR: {model_dir}\n"
@@ -269,6 +273,96 @@ class ContainerServerSmokeTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(approval_core.ApprovalError, "declare it as output_path"):
             approval_core._verify_container_server(self.candidate, self.binding)
+
+    def run_isolated_smoke(self, protocol: str, prediction: dict[str, object], *, task: str = "asr") -> dict[str, object]:
+        self.config(protocol=protocol, task=task)
+        self.binding["container"]["server_command"] = [sys.executable, "server.py"]
+        server_source = (
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            f"protocol = {protocol!r}\n"
+            f"prediction = json.loads({json.dumps(prediction)!r})\n"
+            "for line in sys.stdin:\n"
+            "    request = json.loads(line)\n"
+            "    if protocol == 'jsonl':\n"
+            "        assert Path(request['audio_path']).is_file()\n"
+            "        print(json.dumps(prediction), flush=True)\n"
+            "        continue\n"
+            "    method = request['method']\n"
+            "    result = {}\n"
+            "    if method == 'tools/list':\n"
+            "        result = {'tools': [{'name': 'predict', 'inputSchema': "
+            "{'type': 'object', 'properties': {'audio_path': {'type': 'string'}}}}]}\n"
+            "    elif method == 'tools/call':\n"
+            "        assert Path(request['params']['arguments']['audio_path']).is_file()\n"
+            "        result = {'content': [{'type': 'text', 'text': json.dumps(prediction)}]}\n"
+            "    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)\n"
+            "    if method == 'shutdown':\n"
+            "        break\n"
+        )
+        (self.candidate / "server.py").write_text(server_source, encoding="utf-8")
+        real_run = subprocess.run
+
+        def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            mounts: dict[str, str] = {}
+            for index, argument in enumerate(command):
+                if argument == "--mount":
+                    parts = dict(part.split("=", 1) for part in command[index + 1].split(",") if "=" in part)
+                    mounts[parts["dst"]] = Path(parts["src"]).as_posix()
+            start = command.index(str(self.binding["target_image_ref"])) + 2
+            local_command = [sys.executable, "-I", *command[start:]]
+            for index, argument in enumerate(local_command):
+                for target, source in mounts.items():
+                    argument = argument.replace(target, source)
+                local_command[index] = argument
+            return real_run(local_command, cwd=self.candidate.parent, **kwargs)
+
+        with mock.patch.object(approval_core.subprocess, "run", side_effect=run):
+            return approval_core._verify_container_server(self.candidate, self.binding)
+
+    def test_isolated_runner_executes_mcp_and_projects_prediction(self) -> None:
+        evidence = self.run_isolated_smoke("mcp", {"text": "synthetic transcript"})
+        self.assertEqual(evidence["protocol"], "mcp")
+        self.assertTrue(evidence["called_tool"])
+        self.assertEqual(evidence["steps"]["tools_call"]["projection"], "synthetic transcript")
+
+    def test_isolated_runner_executes_jsonl_and_projects_prediction(self) -> None:
+        evidence = self.run_isolated_smoke("jsonl", {"text": "synthetic transcript"})
+        self.assertEqual(evidence["protocol"], "jsonl")
+        self.assertTrue(evidence["called_tool"])
+        self.assertEqual(evidence["task"], "asr")
+        self.assertEqual(evidence["steps"]["single_request"]["projection"], "synthetic transcript")
+
+    def test_isolated_runner_rejects_nonempty_invalid_prediction(self) -> None:
+        for protocol in ("mcp", "jsonl"):
+            with self.subTest(protocol=protocol):
+                with self.assertRaisesRegex(approval_core.ApprovalError, "prediction projection failed"):
+                    self.run_isolated_smoke(protocol, {"unrelated": "not a transcript"})
+
+    def test_isolated_runner_uses_declared_task_instead_of_asr(self) -> None:
+        for protocol in ("mcp", "jsonl"):
+            with self.subTest(protocol=protocol):
+                evidence = self.run_isolated_smoke(protocol, {"language": "en"}, task="lid")
+                self.assertEqual(evidence["task"], "lid")
+
+    def test_jsonl_without_fixture_is_explicitly_skipped(self) -> None:
+        self.config(protocol="jsonl")
+        manifest = self.candidate / "artifacts" / "fixture_manifest.json"
+        manifest.write_text(json.dumps({"samples": []}), encoding="utf-8")
+        with mock.patch.object(approval_core.subprocess, "run") as run:
+            evidence = approval_core._verify_container_server(self.candidate, self.binding)
+        run.assert_not_called()
+        self.assertEqual(evidence["status"], "skipped")
+        self.assertFalse(evidence["called_tool"])
+        self.assertIn("no fixture", evidence["reason"])
+
+    def test_smoke_prepares_nonroot_output_and_runner_permissions(self) -> None:
+        with mock.patch.object(approval_core.os, "chmod", wraps=os.chmod) as chmod:
+            self.run_isolated_smoke("jsonl", {"text": "synthetic transcript"})
+        permissions = [(Path(call.args[0]), call.args[1]) for call in chmod.call_args_list]
+        self.assertTrue(any(path.name == "output" and mode == 0o777 for path, mode in permissions))
+        self.assertTrue(any(path.name == "runner" and mode == 0o755 for path, mode in permissions))
+        self.assertTrue(any(path.name == "deployment_contract.py" and mode == 0o644 for path, mode in permissions))
 
     def test_reports_server_stderr_when_startup_fails(self) -> None:
         self.config()

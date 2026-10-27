@@ -1084,14 +1084,22 @@ def _fixture_arguments(
 def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[str, Any]:
     config = load_model_config(candidate)
     server = config.get("server") if isinstance(config.get("server"), dict) else {}
-    if not server.get("command") or declared_server_protocol(config, candidate) != MCP_SERVER_PROTOCOL:
-        return {"status": "skipped", "reason": "no declared MCP server"}
+    protocol = declared_server_protocol(config, candidate)
+    if not server.get("command"):
+        return {"status": "skipped", "reason": "no declared server", "called_tool": False}
     container = binding["container"]
     model_target = str(container["model_mount"]["target"])
     working_dir = str(container["working_dir"])
     output_target = "/sure-approve-output"
     contracts = tool_contracts(config, source=f"{candidate.name}/config.yaml")
     arguments = _fixture_arguments(candidate, contracts[0], model_target, output_target)
+    if arguments is None and protocol != MCP_SERVER_PROTOCOL:
+        return {"status": "skipped", "reason": "no fixture arguments for the declared JSONL server", "protocol": protocol, "called_tool": False}
+    protocol = "mcp" if protocol == MCP_SERVER_PROTOCOL else "jsonl"
+    model = config.get("model") if isinstance(config.get("model"), dict) else {}
+    fixture_path = candidate / "artifacts" / "fixture_manifest.json"
+    fixture = read_json(fixture_path) if fixture_path.is_file() else {}
+    task = str(model.get("task") or config.get("task") or config.get("task_type") or fixture.get("task_type") or "ASR")
     startup = server.get("startup_timeout_sec")
     timeout = (float(startup) if isinstance(startup, (int, float)) and startup > 0 else 0.0) + 300.0
     with tempfile.TemporaryDirectory(prefix="sure-approve-container-smoke-") as smoke_dir:
@@ -1099,8 +1107,10 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
         runner_root = Path(smoke_dir) / "runner"
         output_dir = Path(smoke_dir) / "output"
         output_dir.mkdir()
+        os.chmod(output_dir, 0o777)
         for relative in (
             "sure/skills/sure_onboard/scripts/run_server_smoke.py",
+            "sure/skills/sure_onboard/scripts/deployment_contract.py",
             "sure/runtime/harness/model_child_env.py",
             "sure/runtime/prediction_payload.py",
             "sure/runtime/evaluation/task_registry.py",
@@ -1109,6 +1119,10 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
             destination = runner_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO_ROOT / relative, destination)
+        for directory, _subdirs, filenames in os.walk(runner_root):
+            os.chmod(directory, 0o755)
+            for filename in filenames:
+                os.chmod(Path(directory) / filename, 0o644)
         produces = output_dir / "server_contract_smoke.json"
         # The model's declared env, over the two the launcher sets: a server that
         # resolves its weights from MODEL_DIR, or writes an output under RUN_DIR,
@@ -1130,12 +1144,13 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
             str(binding["target_image_ref"]), str(container["python_executable"]),
             f"{repo_target}/sure/skills/sure_onboard/scripts/run_server_smoke.py",
             "--server-command", json.dumps(container["server_command"]),
-            "--protocol", "mcp",
+            "--protocol", str(protocol),
+            "--task", task,
             "--tool", contracts[0].name,
             "--input-schema-json", json.dumps(contracts[0].input_schema),
             "--arguments-json", json.dumps(arguments or {}),
             "--env-json", json.dumps(smoke_env),
-            *([] if arguments else ["--list-only"]),
+            *(["--list-only"] if arguments is None else []),
             "--cwd", working_dir,
             "--timeout", f"{timeout:.0f}",
             "--produces", f"{output_target}/{produces.name}",
@@ -1156,6 +1171,8 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
         return {
             "status": "passed",
             "steps": evidence["steps"],
+            "protocol": protocol,
+            "task": task,
             "model_mount": model_target,
             # A list-only pass proves startup and the advertised contract, not
             # that the tool answers; say which one this was so a reviewer does not

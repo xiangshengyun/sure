@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import hashlib
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,7 +37,7 @@ class RuntimeInventoryTests(unittest.TestCase):
         self.run_artifacts.mkdir(parents=True)
         for name in stage_model_artifacts.CORE_FILES:
             (self.model_dir / name).write_text("# test\n", encoding="utf-8")
-        (self.model_dir / "Dockerfile").write_text("FROM python:3.12\nWORKDIR /workspace/model\n", encoding="utf-8")
+        (self.model_dir / "Dockerfile").write_text("FROM python:3.12\nWORKDIR /model\n", encoding="utf-8")
         (self.model_dir / "config.yaml").write_text(
             "task: asr\nmodel:\n  id: demo/asr\n  backend: uv\n"
             "server:\n  command: [.venv/bin/python, server.py]\n  protocol: mcp\n"
@@ -92,6 +94,8 @@ class RuntimeInventoryTests(unittest.TestCase):
                     "runtime_type": "model_python",
                     "python_executable": "python",
                     "python_version": "3.12.4",
+                    "working_dir": "/model",
+                    "server_command": ["python", "/model/server.py"],
                     "checks": {name: True for name in ("import", "load", "infer", "contract", "bounded_fixture_inference")},
                 },
                 "harness_runtime": {
@@ -117,11 +121,6 @@ class RuntimeInventoryTests(unittest.TestCase):
                     },
                 },
                 "runtime_separation": {"distinct_executables": True},
-                "runtime": {
-                    "python_executable": "python",
-                    "working_dir": "/workspace/model",
-                    "server_command": ["python", "server.py"],
-                },
             },
         )
         write_json(
@@ -167,6 +166,9 @@ class RuntimeInventoryTests(unittest.TestCase):
             inventory["model_runtime"]["python_executable"],
             inventory["harness_runtime"]["python_executable"],
         )
+        self.assertEqual(inventory["container_runtime"]["working_dir"], "/model")
+        self.assertEqual(inventory["container_runtime"]["server_command"], ["python", "/model/server.py"])
+        self.assertEqual(inventory["container_runtime"]["mount_policy"]["model_bundle"]["target"], "/model")
         self.assertTrue(inventory["container_runtime"]["target_image_ref"].endswith("@sha256:" + "a" * 64))
         self.assertEqual(inventory["container_runtime"]["tool_names"], ["asr_transcribe"])
         self.assertEqual(output.read_bytes(), (self.artifacts / "runtime_inventory.json").read_bytes())
@@ -186,6 +188,20 @@ class RuntimeInventoryTests(unittest.TestCase):
             json.loads((self.artifacts / "runtime_inventory.json").read_text())["harness_runtime"]["runtime_root"],
             "/opt/sure-harness/test",
         )
+
+    def test_inventory_gate_rejects_working_dir_mount_mismatch(self) -> None:
+        output = self.run_artifacts / "runtime_inventory.json"
+        inventory = write_inventory(self.model_dir, output, self.run_dir)
+        inventory["container_runtime"]["mount_policy"]["model_bundle"]["target"] = "/workspace/model"
+        write_json(output, inventory)
+        write_json(self.artifacts / "runtime_inventory.json", inventory)
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("check_runtime_inventory.py")),
+             "--run-dir", str(self.run_dir), "--produces", str(output)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("container working_dir must match model bundle mount target", result.stderr)
 
     def test_missing_package_gate_blocks_inventory(self) -> None:
         (self.artifacts / "package_gate.json").unlink()

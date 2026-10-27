@@ -16,7 +16,12 @@ from pathlib import Path, PureWindowsPath
 
 import check_container_package
 import write_package_gate as write_package_gate_module
-from deployment_contract import document_timestamp, resolve_model_dir
+from deployment_contract import (
+    document_timestamp,
+    resolve_model_dir,
+    validate_container_runtime_contract,
+    validate_runtime_roles,
+)
 from finalize_model_bundle import (
     ensure_safe_bundle_targets,
     finalize,
@@ -62,6 +67,7 @@ class DockerDeliveryContractTests(unittest.TestCase):
         )
         self.dockerfile = self.model_dir / "Dockerfile"
         self.dockerfile.write_text("FROM python:3.12\nWORKDIR /workspace/model\n", encoding="utf-8")
+        self.image_working_dir = "/workspace/model"
         fixture_dir = self.model_dir / "fixture" / "asr" / "smoke"
         fixture_dir.mkdir(parents=True)
         (fixture_dir / "sample.wav").write_bytes(b"RIFF-test")
@@ -107,6 +113,8 @@ class DockerDeliveryContractTests(unittest.TestCase):
                 "runtime_type": "model_python",
                 "python_executable": "python",
                 "python_version": "3.12.4",
+                "working_dir": "/workspace/model",
+                "server_command": ["python", "/workspace/model/server.py"],
                 "checks": {name: True for name in ("import", "load", "infer", "contract", "bounded_fixture_inference")},
             },
             "harness_runtime": {
@@ -134,7 +142,6 @@ class DockerDeliveryContractTests(unittest.TestCase):
             "runtime_separation": {"distinct_executables": True},
             "sample_output_path": str(self.sample),
             "sample_output_sha256": hashlib.sha256(self.sample.read_bytes()).hexdigest(),
-            "runtime": {"python_executable": "python", "working_dir": "/workspace/model", "server_command": ["python", "server.py"]},
         }
         self.registry = {
             "schema": "sure.onboard.docker_registry_result.v2",
@@ -205,6 +212,7 @@ class DockerDeliveryContractTests(unittest.TestCase):
         docker = bin_dir / "docker"
         docker.write_text(
             "#!/bin/sh\n"
+            f"if [ \"$1\" = image ] && [ \"$5\" = '{{{{json .Config.WorkingDir}}}}' ]; then printf '%s\\n' '\"{self.image_working_dir}\"'; exit 0; fi\n"
             f"if [ \"$1\" = image ]; then printf '%s\\n' '[\"{self.image_ref}\"]'; exit 0; fi\n"
             "if [ \"$1\" = run ]; then printf '%s\\n' '/runtime/python'; exit 0; fi\n"
             "exit 1\n",
@@ -226,6 +234,8 @@ class DockerDeliveryContractTests(unittest.TestCase):
         # Recognize POSIX and Windows CLI paths on either test host.
         binary = PureWindowsPath(command[0]).name.casefold() if command else ""
         if binary in {"docker", "docker.exe"} and len(command) >= 2 and command[1] == "image":
+            if command[-1] == "{{json .Config.WorkingDir}}":
+                return subprocess.CompletedProcess(command, 0, json.dumps(self.image_working_dir) + "\n", "")
             return subprocess.CompletedProcess(command, 0, json.dumps([self.image_ref]) + "\n", "")
         if binary in {"docker", "docker.exe"} and len(command) >= 2 and command[1] == "run":
             return subprocess.CompletedProcess(command, 0, "/runtime/python\n", "")
@@ -264,6 +274,174 @@ class DockerDeliveryContractTests(unittest.TestCase):
 
         self.assertEqual(model_dir, self.model_dir.resolve())
         self.assertEqual(resolved["model_name"], "demo__asr")
+
+    def test_model_runtime_requires_container_working_dir_and_server_command(self) -> None:
+        validation = json.loads(json.dumps(self.validation))
+        validation["model_runtime"].pop("working_dir")
+        with self.assertRaisesRegex(ValueError, "model_runtime.working_dir"):
+            validate_runtime_roles(validation)
+
+    def test_dockerfile_paths_must_match_model_runtime(self) -> None:
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        runtime["server_command"] = ["python", "/model/server.py"]
+        with self.assertRaisesRegex(ValueError, "WORKDIR.*model_runtime.working_dir"):
+            validate_container_runtime_contract(self.dockerfile, runtime)
+
+    def test_dockerfile_model_environment_must_match_model_runtime(self) -> None:
+        dockerfile = self.model_dir / "Dockerfile"
+        dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ENV SURE_MODEL_DIR=/model PYTHONPATH=/opt/source:/model\n"
+            "WORKDIR /workspace/model\n",
+            encoding="utf-8",
+        )
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/workspace/model"
+        runtime["server_command"] = ["python", "/workspace/model/server.py"]
+        with self.assertRaisesRegex(ValueError, "SURE_MODEL_DIR.*model_runtime.working_dir"):
+            validate_container_runtime_contract(dockerfile, runtime)
+
+    def test_dockerfile_pythonpath_must_match_model_runtime(self) -> None:
+        dockerfile = self.model_dir / "Dockerfile"
+        dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ENV PYTHONPATH=/opt/source:/model\n"
+            "WORKDIR /workspace/model\n",
+            encoding="utf-8",
+        )
+        runtime = dict(self.validation["model_runtime"])
+        with self.assertRaisesRegex(ValueError, "PYTHONPATH.*model_runtime.working_dir"):
+            validate_container_runtime_contract(dockerfile, runtime)
+
+    def test_dockerfile_literal_paths_allow_trailing_slashes(self) -> None:
+        dockerfile = self.model_dir / "Dockerfile"
+        dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ENV SURE_MODEL_DIR=/model/ PYTHONPATH=/opt/source:/model/\n"
+            "WORKDIR /model/\n",
+            encoding="utf-8",
+        )
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        runtime["server_command"] = ["python", "/model/server.py"]
+        validate_container_runtime_contract(dockerfile, runtime)
+
+    def test_dockerfile_variable_paths_defer_to_runtime_smoke(self) -> None:
+        dockerfile = self.model_dir / "Dockerfile"
+        dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ARG MODEL_ROOT=/model\n"
+            "ENV SURE_MODEL_DIR=${MODEL_ROOT} PYTHONPATH=/opt/source:${MODEL_ROOT}\n"
+            "WORKDIR ${MODEL_ROOT}\n",
+            encoding="utf-8",
+        )
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        runtime["server_command"] = ["python", "/model/server.py"]
+        validate_container_runtime_contract(dockerfile, runtime)
+
+    def test_dockerfile_model_dir_must_match_model_runtime(self) -> None:
+        dockerfile = self.model_dir / "Dockerfile"
+        dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ENV MODEL_DIR=/model\n"
+            "WORKDIR /workspace/model\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "MODEL_DIR.*model_runtime.working_dir"):
+            validate_container_runtime_contract(dockerfile, self.validation["model_runtime"])
+
+    def test_build_stage_environment_does_not_pollute_final_image(self) -> None:
+        self.dockerfile.write_text(
+            "FROM python:3.12 AS build\nENV MODEL_DIR=/build\nWORKDIR /build\n"
+            "FROM python:3.12\nWORKDIR /workspace/model\n",
+            encoding="utf-8",
+        )
+        validate_container_runtime_contract(self.dockerfile, self.validation["model_runtime"])
+
+    def test_final_stage_inherits_named_stage_environment(self) -> None:
+        self.dockerfile.write_text(
+            "FROM python:3.12 AS base\nENV MODEL_DIR=/model\nWORKDIR /model\n"
+            "FROM base AS final\nRUN true\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "WORKDIR.*model_runtime.working_dir"):
+            validate_container_runtime_contract(self.dockerfile, self.validation["model_runtime"])
+
+    def test_relative_workdir_is_resolved_and_normalized(self) -> None:
+        self.dockerfile.write_text(
+            "FROM python:3.12\nWORKDIR /workspace/tmp\nWORKDIR ../model\n",
+            encoding="utf-8",
+        )
+        validate_container_runtime_contract(self.dockerfile, self.validation["model_runtime"])
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        with self.assertRaisesRegex(ValueError, "WORKDIR.*model_runtime.working_dir"):
+            validate_container_runtime_contract(self.dockerfile, runtime)
+
+    def test_misplaced_bundle_server_script_is_rejected_but_image_python_is_allowed(self) -> None:
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        runtime["server_command"] = ["/usr/local/bin/python", "/workspace/model/server.py"]
+        runtime["external_command_paths"] = ["/usr/local/bin/python"]
+        self.dockerfile.write_text("FROM python:3.12\nWORKDIR /model\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "server_command.*model_runtime.working_dir"):
+            validate_container_runtime_contract(self.dockerfile, runtime)
+        runtime["server_command"] = ["/usr/local/bin/python", "/opt/vendor/server.py"]
+        with self.assertRaisesRegex(ValueError, "server_command.*model_runtime.working_dir"):
+            validate_container_runtime_contract(self.dockerfile, runtime)
+        runtime["external_command_paths"].append("/opt/vendor/server.py")
+        validate_container_runtime_contract(self.dockerfile, runtime)
+
+    def test_a_model_root_in_server_command_is_rejected_even_when_the_basename_differs(self) -> None:
+        self.dockerfile.write_text("FROM python:3.12\nWORKDIR /opt/app\n", encoding="utf-8")
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/opt/app"
+        for command in (
+            ["python", "/workspace/model/server.py"],
+            ["python", "/workspace/model/serve.py"],
+            ["python", "/workspace/app/server.py"],
+            ["/workspace/model/.venv/bin/python", "server.py"],
+        ):
+            with self.subTest(command=command):
+                runtime["server_command"] = command
+                with self.assertRaisesRegex(ValueError, "server_command.*model_runtime.working_dir"):
+                    validate_container_runtime_contract(self.dockerfile, runtime)
+
+    def test_a_relative_workdir_in_a_fresh_stage_uses_the_base_image_workdir(self) -> None:
+        self.dockerfile.write_text("FROM custom-base\nWORKDIR model\n", encoding="utf-8")
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        runtime["server_command"] = ["python", "server.py"]
+        self.assertEqual(validate_container_runtime_contract(self.dockerfile, runtime), "model")
+        self.image_working_dir = "/opt/model"
+        self.build["dockerfile_sha256"] = hashlib.sha256(self.dockerfile.read_bytes()).hexdigest()
+        write_json(self.run_artifacts / "docker_build_result.json", self.build)
+        self.validation["model_runtime"] = runtime
+        write_json(self.run_artifacts / "docker_validation.json", self.validation)
+        code, output = self.run_container_gate_with_stubbed_docker("docker")
+        self.assertNotEqual(code, 0)
+        self.assertIn("image WORKDIR '/opt/model' disagrees", output)
+        runtime["working_dir"] = "/opt/model"
+        write_json(self.run_artifacts / "docker_validation.json", self.validation)
+        code, output = self.run_container_gate_with_stubbed_docker("docker")
+        self.assertEqual(code, 0, output)
+
+    def test_an_image_owned_script_with_model_in_its_path_needs_an_explicit_exception(self) -> None:
+        self.dockerfile.write_text("FROM python:3.12\nWORKDIR /opt/app\n", encoding="utf-8")
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/opt/app"
+        runtime["server_command"] = ["python", "/usr/local/lib/model/serve.py"]
+        with self.assertRaisesRegex(ValueError, "server_command.*model_runtime.working_dir"):
+            validate_container_runtime_contract(self.dockerfile, runtime)
+        runtime["external_command_paths"] = ["/usr/local/lib/model/serve.py"]
+        validate_container_runtime_contract(self.dockerfile, runtime)
+
+    def test_external_command_paths_must_be_absolute(self) -> None:
+        self.validation["model_runtime"]["external_command_paths"] = ["server.py"]
+        with self.assertRaisesRegex(ValueError, "external_command_paths"):
+            validate_runtime_roles(self.validation)
 
     @unittest.skipIf(os.name == "nt", "the fake docker on PATH is a POSIX shell script Windows cannot launch")
     def test_container_gate_requires_live_digest_inspect(self) -> None:

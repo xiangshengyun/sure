@@ -12,7 +12,7 @@ import approval_core
 
 
 class ContainerValidationMountTests(unittest.TestCase):
-    def _verify(self, *, model_target: str = "/workspace/model", ship_artifacts: bool = True, ship_outputs: bool = False):
+    def _verify(self, *, model_target: str = "/workspace/model", ship_artifacts: bool = True, ship_outputs: bool = False, write_results: bool = True):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             run_dir = root / "run"
@@ -68,6 +68,16 @@ class ContainerValidationMountTests(unittest.TestCase):
                     path.relative_to(validation_source).as_posix(): stat.S_IMODE(path.stat().st_mode)
                     for path in validation_source.rglob("*")
                 }
+                if write_results:
+                    for stage, key in (
+                        ("import", "import_passed"),
+                        ("load", "load_passed"),
+                        ("infer", "infer_passed"),
+                        ("contract", "contract_passed"),
+                    ):
+                        (validation_source / f"{stage}_result.json").write_text(
+                            json.dumps({key: True}), encoding="utf-8"
+                        )
                 return mock.Mock(returncode=0, stdout="", stderr="")
 
             with (
@@ -92,6 +102,24 @@ class ContainerValidationMountTests(unittest.TestCase):
         self.assertTrue(any(value.endswith(",dst=/workspace/model/artifacts") for value in mounts))
         self.assertEqual(observed["copied_files"], ["artifact_manifest.json", "fixture_manifest.json"])
         self.assertEqual(result["status"], "passed")
+
+    def test_validate_smoke_overrides_the_image_entrypoint(self) -> None:
+        _, _, observed = self._verify()
+
+        command = observed["command"]
+        assert isinstance(command, list)
+        # The image may bake its own ENTRYPOINT; the approved interpreter must be
+        # the entrypoint, not an argument after it (`python3 python3 validate.py`).
+        self.assertEqual(command[command.index("--entrypoint") + 1], "/usr/local/bin/python")
+        self.assertEqual(command.count("/usr/local/bin/python"), 1)
+        image_index = next(index for index, value in enumerate(command) if value.startswith("registry.example/demo@"))
+        self.assertEqual(command[image_index + 1], "/workspace/model/validate.py")
+
+    def test_validate_smoke_refuses_an_exit_code_without_stage_evidence(self) -> None:
+        # The local CLI has reported 0 for a container that exited 1, so a missing
+        # stage result must fail the smoke even when the exit code says success.
+        with self.assertRaisesRegex(approval_core.ApprovalError, "did not persist a passing result"):
+            self._verify(write_results=False)
 
     def test_validation_mount_target_normalizes_a_trailing_slash(self) -> None:
         _, _, observed = self._verify(model_target="/workspace/model/")

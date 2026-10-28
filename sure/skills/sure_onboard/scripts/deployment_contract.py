@@ -364,6 +364,71 @@ def _normalized_container_path(value: str, *, base: str | None = None) -> str | 
     return posixpath.normpath(str(path))
 
 
+def _validate_runtime_path_env(
+    settings: dict[str, str],
+    working_dir: str,
+    *,
+    source: str,
+    path_base: str | None,
+) -> None:
+    normalized_working_dir = _normalized_container_path(working_dir)
+    target = PurePosixPath(normalized_working_dir or working_dir)
+    for variable in ("SURE_MODEL_DIR", "MODEL_DIR"):
+        declared_model_dir = _normalized_container_path(settings.get(variable, ""), base=path_base)
+        if declared_model_dir and declared_model_dir != normalized_working_dir:
+            raise ValueError(
+                f"{source} {variable} {settings[variable]!r} disagrees with model_runtime.working_dir {working_dir!r}"
+            )
+    # MODEL_PATH names the weights, which normally sit in a subdirectory of the
+    # bundle (/workspace/model/checkpoints), so containment is the contract
+    # rather than equality. An image that bakes a path outside the mount
+    # shadows the mounted bundle with an empty built-in directory and only
+    # fails at inference, where neither the run nor the binding may override it.
+    declared_model_path = _normalized_container_path(settings.get("MODEL_PATH", ""), base=path_base)
+    if declared_model_path:
+        resolved_model_path = PurePosixPath(declared_model_path)
+        if resolved_model_path != target and target not in resolved_model_path.parents:
+            raise ValueError(
+                f"{source} MODEL_PATH {settings['MODEL_PATH']!r} disagrees with model_runtime.working_dir {working_dir!r}"
+            )
+    declared_pythonpath = settings.get("PYTHONPATH")
+    if declared_pythonpath:
+        for entry in declared_pythonpath.split(":"):
+            normalized_entry = _normalized_container_path(entry, base=path_base)
+            if normalized_entry is None:
+                continue
+            path = PurePosixPath(normalized_entry)
+            if "model" not in path.parts:
+                continue
+            try:
+                path.relative_to(target)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{source} PYTHONPATH entry {entry!r} does not use model_runtime.working_dir {working_dir!r}"
+                ) from exc
+
+
+def validate_image_runtime_env(env_entries: list[str], working_dir: str) -> None:
+    """Apply the Dockerfile path contract to the ENV the image actually carries.
+
+    `docker image inspect .Config.Env` includes ENV inherited from base images
+    and ARG-expanded values, neither of which the final Dockerfile text shows.
+    Those are exactly the absolute paths that shadow the mounted bundle at
+    inference, so the same rules must run against the resolved image config.
+    """
+    settings: dict[str, str] = {}
+    for entry in env_entries:
+        key, separator, value = entry.partition("=")
+        if separator and key:
+            settings[key] = value
+    _validate_runtime_path_env(
+        settings,
+        working_dir,
+        source="image ENV",
+        path_base=working_dir,
+    )
+
+
 def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[str, Any]) -> str | None:
     working_dir = str(model_runtime["working_dir"])
     settings = _dockerfile_runtime_settings(dockerfile)
@@ -374,43 +439,12 @@ def validate_container_runtime_contract(dockerfile: Path, model_runtime: dict[st
         raise ValueError(
             f"Dockerfile WORKDIR {settings['WORKDIR']!r} disagrees with model_runtime.working_dir {working_dir!r}"
         )
-    for variable in ("SURE_MODEL_DIR", "MODEL_DIR"):
-        declared_model_dir = _normalized_container_path(
-            settings.get(variable, ""), base=settings.get("WORKDIR")
-        )
-        if declared_model_dir and declared_model_dir != normalized_working_dir:
-            raise ValueError(
-                f"Dockerfile {variable} {settings[variable]!r} disagrees with model_runtime.working_dir {working_dir!r}"
-            )
-    # MODEL_PATH names the weights, which normally sit in a subdirectory of the
-    # bundle (/workspace/model/checkpoints), so containment is the contract
-    # rather than equality. An image that bakes a path outside the mount
-    # shadows the mounted bundle with an empty built-in directory and only
-    # fails at inference, where neither the run nor the binding may override it.
-    declared_model_path = _normalized_container_path(
-        settings.get("MODEL_PATH", ""), base=settings.get("WORKDIR")
+    _validate_runtime_path_env(
+        settings,
+        working_dir,
+        source="Dockerfile",
+        path_base=settings.get("WORKDIR"),
     )
-    if declared_model_path:
-        resolved_model_path = PurePosixPath(declared_model_path)
-        if resolved_model_path != target and target not in resolved_model_path.parents:
-            raise ValueError(
-                f"Dockerfile MODEL_PATH {settings['MODEL_PATH']!r} disagrees with model_runtime.working_dir {working_dir!r}"
-            )
-    declared_pythonpath = settings.get("PYTHONPATH")
-    if declared_pythonpath:
-        for entry in declared_pythonpath.split(":"):
-            normalized_entry = _normalized_container_path(entry)
-            if normalized_entry is None:
-                continue
-            path = PurePosixPath(normalized_entry)
-            if "model" not in path.parts:
-                continue
-            try:
-                path.relative_to(target)
-            except ValueError as exc:
-                raise ValueError(
-                    f"Dockerfile PYTHONPATH entry {entry!r} does not use model_runtime.working_dir {working_dir!r}"
-                ) from exc
     external_paths = {_normalized_container_path(item) for item in model_runtime.get("external_command_paths", [])}
     for item in model_runtime["server_command"]:
         candidate = _normalized_container_path(item)

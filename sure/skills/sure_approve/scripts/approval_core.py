@@ -1166,8 +1166,11 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
             "--timeout", f"{timeout:.0f}",
             "--produces", f"{output_target}/{produces.name}",
         ])
+        # ponytail: GPU partition_command dropped with the GPU branch; restore
+        # when gpu_partition lands upstream.
+        child_env = os.environ
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout + 60.0, check=False)
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout + 60.0, check=False, env=child_env)
         except subprocess.TimeoutExpired as exc:
             raise ApprovalError("candidate server timed out under the approved container mount") from exc
         evidence = read_json(produces) if produces.is_file() else {}

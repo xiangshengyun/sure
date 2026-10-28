@@ -68,6 +68,7 @@ class DockerDeliveryContractTests(unittest.TestCase):
         self.dockerfile = self.model_dir / "Dockerfile"
         self.dockerfile.write_text("FROM python:3.12\nWORKDIR /workspace/model\n", encoding="utf-8")
         self.image_working_dir = "/workspace/model"
+        self.image_env: list[str] = []
         fixture_dir = self.model_dir / "fixture" / "asr" / "smoke"
         fixture_dir.mkdir(parents=True)
         (fixture_dir / "sample.wav").write_bytes(b"RIFF-test")
@@ -212,6 +213,7 @@ class DockerDeliveryContractTests(unittest.TestCase):
         docker = bin_dir / "docker"
         docker.write_text(
             "#!/bin/sh\n"
+            f"if [ \"$1\" = image ] && [ \"$5\" = '{{{{json .Config.Env}}}}' ]; then printf '%s\\n' '{json.dumps(self.image_env)}'; exit 0; fi\n"
             f"if [ \"$1\" = image ] && [ \"$5\" = '{{{{json .Config.WorkingDir}}}}' ]; then printf '%s\\n' '\"{self.image_working_dir}\"'; exit 0; fi\n"
             f"if [ \"$1\" = image ]; then printf '%s\\n' '[\"{self.image_ref}\"]'; exit 0; fi\n"
             "if [ \"$1\" = run ]; then printf '%s\\n' '/runtime/python'; exit 0; fi\n"
@@ -234,6 +236,8 @@ class DockerDeliveryContractTests(unittest.TestCase):
         # Recognize POSIX and Windows CLI paths on either test host.
         binary = PureWindowsPath(command[0]).name.casefold() if command else ""
         if binary in {"docker", "docker.exe"} and len(command) >= 2 and command[1] == "image":
+            if command[-1] == "{{json .Config.Env}}":
+                return subprocess.CompletedProcess(command, 0, json.dumps(self.image_env) + "\n", "")
             if command[-1] == "{{json .Config.WorkingDir}}":
                 return subprocess.CompletedProcess(command, 0, json.dumps(self.image_working_dir) + "\n", "")
             return subprocess.CompletedProcess(command, 0, json.dumps([self.image_ref]) + "\n", "")
@@ -485,6 +489,31 @@ class DockerDeliveryContractTests(unittest.TestCase):
             with self.subTest(docker_binary=docker_binary):
                 code, output = self.run_container_gate_with_stubbed_docker(docker_binary)
                 self.assertEqual(code, 0, output)
+
+    def test_image_workdir_is_checked_even_when_the_dockerfile_declares_none(self) -> None:
+        # The base image may set WORKDIR; the final Dockerfile text then shows
+        # no WORKDIR at all, and the mount contract used to go unchecked.
+        self.dockerfile.write_text("FROM python:3.12\n", encoding="utf-8")
+        self.build["dockerfile_sha256"] = hashlib.sha256(self.dockerfile.read_bytes()).hexdigest()
+        write_json(self.run_artifacts / "docker_build_result.json", self.build)
+        self.image_working_dir = "/opt/model"
+
+        code, output = self.run_container_gate_with_stubbed_docker("docker")
+
+        self.assertNotEqual(code, 0)
+        self.assertIn("image WORKDIR '/opt/model' disagrees", output)
+
+    def test_image_env_model_path_outside_the_mount_is_rejected(self) -> None:
+        # ENV inherited from the base image is invisible in the Dockerfile but
+        # is what the model server actually reads at inference.
+        self.image_env = ["MODEL_PATH=/model/checkpoints"]
+        code, output = self.run_container_gate_with_stubbed_docker("docker")
+        self.assertNotEqual(code, 0)
+        self.assertIn("image ENV MODEL_PATH '/model/checkpoints' disagrees", output)
+
+        self.image_env = ["MODEL_PATH=/workspace/model/checkpoints"]
+        code, output = self.run_container_gate_with_stubbed_docker("docker")
+        self.assertEqual(code, 0, output)
 
     def test_fixture_gate_rejects_an_empty_annotation_value(self) -> None:
         fixture_dir = self.model_dir / "fixture" / "asr" / "smoke"

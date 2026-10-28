@@ -23,6 +23,7 @@ from deployment_contract import (
     validate_container_documents,
     validate_container_runtime_contract,
     validate_image_and_digest,
+    validate_image_runtime_env,
     validate_runtime_roles,
 )
 
@@ -60,6 +61,25 @@ def verify_live_image(docker_bin: str, image_ref: str, expected_working_dir: str
             raise ValueError("docker image inspect did not return Config.WorkingDir JSON") from exc
         if not isinstance(actual_working_dir, str) or posixpath.normpath(actual_working_dir) != posixpath.normpath(expected_working_dir):
             raise ValueError(f"digest-pinned image WORKDIR {actual_working_dir!r} disagrees with model_runtime.working_dir {expected_working_dir!r}")
+        env_probe = subprocess.run(
+            [docker_bin, "image", "inspect", image_ref, "--format", "{{json .Config.Env}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if env_probe.returncode != 0:
+            raise ValueError(f"digest-pinned image ENV is not inspectable: {(env_probe.stderr or env_probe.stdout).strip()}")
+        try:
+            env_entries = json.loads(env_probe.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValueError("docker image inspect did not return Config.Env JSON") from exc
+        if env_entries is None:
+            # A scratch-based image has no Config.Env at all, hence no baked path.
+            env_entries = []
+        if not isinstance(env_entries, list) or not all(isinstance(entry, str) for entry in env_entries):
+            raise ValueError("docker image inspect returned a malformed Config.Env")
+        validate_image_runtime_env(env_entries, expected_working_dir)
 
 
 def verify_live_runtimes(
@@ -155,9 +175,13 @@ def main() -> int:
             expected_runtime_id=os.environ.get("SURE_HARNESS_RUNTIME_ID") or None,
             expected_lock_sha256=os.environ.get("SURE_HARNESS_LOCK_SHA256") or None,
         )
-        declared_workdir = validate_container_runtime_contract(dockerfile, model_runtime)
+        validate_container_runtime_contract(dockerfile, model_runtime)
         docker_bin = resolve_docker_binary()
-        verify_live_image(docker_bin, image_ref, str(model_runtime["working_dir"]) if declared_workdir else None)
+        # The image is the runtime truth: a WORKDIR or ENV inherited from the
+        # base image can differ from the Dockerfile text, so always compare the
+        # resolved config against the mount contract, not only when this stage
+        # declares a WORKDIR.
+        verify_live_image(docker_bin, image_ref, str(model_runtime["working_dir"]))
         verify_live_runtimes(docker_bin, image_ref, model_runtime, harness_runtime)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"PACKAGE_CONTAINER failed: {exc}", file=sys.stderr)

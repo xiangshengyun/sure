@@ -97,7 +97,7 @@ class ContainerServerSmokeTests(unittest.TestCase):
         self.assertEqual(evidence["status"], "passed")
 
     def test_smokes_server_under_approved_read_only_mount(self) -> None:
-        self.config()
+        self.config(extra_env="    API_TOKEN: s3cret\n")
         observed: list[str] = []
 
         def run(command: list[str], **kwargs: object) -> mock.Mock:
@@ -128,6 +128,10 @@ class ContainerServerSmokeTests(unittest.TestCase):
         self.assertNotIn("--list-only", observed)
         arguments = json.loads(observed[observed.index("--arguments-json") + 1])
         self.assertEqual(arguments, {"audio_path": "/workspace/model/fixture/asr/sample.wav"})
+        # The receipt says what the server ran with, without the secret itself.
+        self.assertEqual(evidence["env"]["API_TOKEN"], "***")
+        self.assertEqual(evidence["env"]["MODEL_DIR"], "/workspace/model")
+        self.assertEqual(evidence["env"]["RUN_DIR"], "/sure-approve-output")
 
     def test_refuses_a_required_input_the_fixture_cannot_supply(self) -> None:
         (self.candidate / "config.yaml").write_text(
@@ -197,12 +201,30 @@ class ContainerServerSmokeTests(unittest.TestCase):
         self.assertNotIn("--list-only", observed)
         self.assertTrue(evidence["called_tool"])
 
-    def test_falls_back_to_list_only_when_no_fixture_can_drive_the_tool(self) -> None:
+    def test_refuses_a_tool_the_fixture_cannot_drive(self) -> None:
+        # A list-only pass proved the server started, not that it answers; a
+        # model that loads weights on the first call was approved without one.
         (self.candidate / "config.yaml").write_text(
             "server:\n  command: [python, server.py]\n  protocol: mcp\n"
             "  working_dir: /workspace/model\ntools:\n"
-            "  - name: predict\n    input_schema:\n      type: object\n      properties:\n"
-            "        text: {type: string}\n",
+            "  - name: predict\n    input_schema:\n      type: object\n      required: [text]\n"
+            "      properties:\n        text: {type: string}\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(approval_core.subprocess, "run") as run:
+            with self.assertRaisesRegex(approval_core.ApprovalError, "server_smoke_input.json"):
+                approval_core._verify_container_server(self.candidate, self.binding)
+        run.assert_not_called()
+
+    def test_an_authored_smoke_input_drives_a_tool_the_fixture_cannot(self) -> None:
+        (self.candidate / "artifacts" / "server_smoke_input.json").write_text(
+            json.dumps({"arguments": {"text": "hello from the bundle"}}), encoding="utf-8"
+        )
+        (self.candidate / "config.yaml").write_text(
+            "server:\n  command: [python, server.py]\n  protocol: mcp\n"
+            "  working_dir: /workspace/model\ntools:\n"
+            "  - name: predict\n    input_schema:\n      type: object\n"
+            "      required: [text]\n      properties:\n        text: {type: string}\n",
             encoding="utf-8",
         )
         observed: list[str] = []
@@ -212,14 +234,42 @@ class ContainerServerSmokeTests(unittest.TestCase):
             output_mount = next(value for value in command if value.endswith(",dst=/sure-approve-output"))
             output_dir = Path(output_mount.removeprefix("type=bind,src=").removesuffix(",dst=/sure-approve-output"))
             (output_dir / "server_contract_smoke.json").write_text(
-                json.dumps({"status": "passed", "steps": {"tools_list": {"ok": True}}}), encoding="utf-8"
+                json.dumps({"status": "passed", "steps": {"tools_call": {"ok": True}}}), encoding="utf-8"
             )
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch.object(approval_core.subprocess, "run", side_effect=run):
             evidence = approval_core._verify_container_server(self.candidate, self.binding)
-        self.assertIn("--list-only", observed)
-        self.assertFalse(evidence["called_tool"])
+        self.assertEqual(
+            json.loads(observed[observed.index("--arguments-json") + 1]), {"text": "hello from the bundle"}
+        )
+        self.assertTrue(evidence["called_tool"])
+
+    def test_a_tool_with_only_optional_inputs_is_called_with_an_empty_object(self) -> None:
+        # The fixture cannot fill an optional-only schema, but `{}` is a valid
+        # call, so there is no reason to refuse the smoke.
+        (self.candidate / "config.yaml").write_text(
+            "server:\n  command: [python, server.py]\n  protocol: mcp\n"
+            "  working_dir: /workspace/model\ntools:\n"
+            "  - name: ping\n    input_schema:\n      type: object\n"
+            "      properties:\n        note: {type: string}\n",
+            encoding="utf-8",
+        )
+        observed: list[str] = []
+
+        def run(command: list[str], **kwargs: object) -> mock.Mock:
+            observed.extend(command)
+            output_mount = next(value for value in command if value.endswith(",dst=/sure-approve-output"))
+            output_dir = Path(output_mount.removeprefix("type=bind,src=").removesuffix(",dst=/sure-approve-output"))
+            (output_dir / "server_contract_smoke.json").write_text(
+                json.dumps({"status": "passed", "steps": {"tools_call": {"ok": True}}}), encoding="utf-8"
+            )
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(approval_core.subprocess, "run", side_effect=run):
+            evidence = approval_core._verify_container_server(self.candidate, self.binding)
+        self.assertEqual(json.loads(observed[observed.index("--arguments-json") + 1]), {})
+        self.assertTrue(evidence["called_tool"])
 
     def test_output_suffix_follows_the_sample_audio_not_the_first_fillable_field(self) -> None:
         # An SE/TTS bundle can fill a `.mp3` prompt first while the model writes
@@ -350,16 +400,20 @@ class ContainerServerSmokeTests(unittest.TestCase):
                 evidence = self.run_isolated_smoke(protocol, {"language": "en"}, task="lid")
                 self.assertEqual(evidence["task"], "lid")
 
-    def test_jsonl_without_fixture_is_explicitly_skipped(self) -> None:
-        self.config(protocol="jsonl")
+    def test_jsonl_without_fixture_is_refused_instead_of_skipped(self) -> None:
+        (self.candidate / "config.yaml").write_text(
+            "server:\n  command: [python, server.py]\n  protocol: jsonl\n"
+            "  working_dir: /workspace/model\ntools:\n"
+            "  - name: predict\n    input_schema:\n      type: object\n      required: [text]\n"
+            "      properties:\n        text: {type: string}\n",
+            encoding="utf-8",
+        )
         manifest = self.candidate / "artifacts" / "fixture_manifest.json"
         manifest.write_text(json.dumps({"samples": []}), encoding="utf-8")
         with mock.patch.object(approval_core.subprocess, "run") as run:
-            evidence = approval_core._verify_container_server(self.candidate, self.binding)
+            with self.assertRaisesRegex(approval_core.ApprovalError, "server_smoke_input.json"):
+                approval_core._verify_container_server(self.candidate, self.binding)
         run.assert_not_called()
-        self.assertEqual(evidence["status"], "skipped")
-        self.assertFalse(evidence["called_tool"])
-        self.assertIn("no fixture", evidence["reason"])
 
     def test_smoke_prepares_nonroot_output_and_runner_permissions(self) -> None:
         with mock.patch.object(approval_core.os, "chmod", wraps=os.chmod) as chmod:

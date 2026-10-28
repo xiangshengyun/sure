@@ -706,10 +706,21 @@ def load_deployment_binding(model_dir: Path, model_name: str) -> dict[str, Any]:
     tool_names = container.get("tool_names")
     working_dir = str(container.get("working_dir") or model_target)
     python_executable = str(container.get("python_executable") or "")
+    # Absent in a legacy inventory: its absence is what tells the inference
+    # preflight it has no allowlist to judge a server command against.
+    external_command_paths = container.get("external_command_paths")
     _require(isinstance(server_command, list) and all(isinstance(item, str) and item for item in server_command), "container server_command is invalid")
     _require(isinstance(tool_names, list) and all(isinstance(item, str) and item for item in tool_names), "container tool_names are invalid")
     _require(PurePosixPath(working_dir).is_absolute(), "container working_dir must be absolute")
     _require(bool(python_executable), "container python_executable is missing")
+    _require(
+        external_command_paths is None
+        or (
+            isinstance(external_command_paths, list)
+            and all(isinstance(item, str) and PurePosixPath(item).is_absolute() for item in external_command_paths)
+        ),
+        "container external_command_paths must be absolute container paths",
+    )
     image_harness = inventory.get("harness_runtime")
     if isinstance(image_harness, dict) and image_harness.get("required") is True:
         image_harness = _normalize_harness_runtime(image_harness)
@@ -823,6 +834,7 @@ def load_deployment_binding(model_dir: Path, model_name: str) -> dict[str, Any]:
             "python_executable": python_executable,
             "working_dir": working_dir,
             "server_command": server_command,
+            **({"external_command_paths": list(external_command_paths)} if external_command_paths is not None else {}),
             "tool_names": tool_names,
             "gpu_required": container.get("gpu_required") is True,
             "harness_runtime_evidence": image_harness_evidence,

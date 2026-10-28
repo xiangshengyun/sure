@@ -96,6 +96,7 @@ class RuntimeInventoryTests(unittest.TestCase):
                     "python_version": "3.12.4",
                     "working_dir": "/model",
                     "server_command": ["python", "/model/server.py"],
+                    "external_command_paths": ["/opt/vendor/tool"],
                     "checks": {name: True for name in ("import", "load", "infer", "contract", "bounded_fixture_inference")},
                 },
                 "harness_runtime": {
@@ -168,6 +169,8 @@ class RuntimeInventoryTests(unittest.TestCase):
         )
         self.assertEqual(inventory["container_runtime"]["working_dir"], "/model")
         self.assertEqual(inventory["container_runtime"]["server_command"], ["python", "/model/server.py"])
+        # Inference judges the server command against this allowlist, so it must survive onboarding.
+        self.assertEqual(inventory["container_runtime"]["external_command_paths"], ["/opt/vendor/tool"])
         self.assertEqual(inventory["container_runtime"]["mount_policy"]["model_bundle"]["target"], "/model")
         self.assertTrue(inventory["container_runtime"]["target_image_ref"].endswith("@sha256:" + "a" * 64))
         self.assertEqual(inventory["container_runtime"]["tool_names"], ["asr_transcribe"])

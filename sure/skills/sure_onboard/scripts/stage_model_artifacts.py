@@ -39,6 +39,10 @@ REQUIRED_RUN_ARTIFACTS = [
 OPTIONAL_RUN_ARTIFACTS = [
     "build.log",
     "validation.log",
+    # The arguments onboarding used to drive a tool its fixture cannot fill.
+    # Approval runs after this run directory is gone, so the escape hatch has
+    # to travel with the bundle or the model is refused at approval time.
+    "server_smoke_input.json",
     "sample_output.json",
     "sample_outputs.jsonl",
     "local_env.json",

@@ -119,6 +119,11 @@ class ContainerServerSmokeTests(unittest.TestCase):
         self.assertIn(f"type=bind,src={self.candidate},dst=/workspace/model,readonly", observed)
         self.assertIn("--gpus", observed)
         self.assertIn("/workspace/model", observed)
+        # The image ENTRYPOINT must not be prepended to the approved interpreter.
+        self.assertEqual(observed[observed.index("--entrypoint") + 1], "/usr/local/bin/python")
+        self.assertEqual(observed.count("/usr/local/bin/python"), 1)
+        image_index = observed.index(str(self.binding["target_image_ref"]))
+        self.assertEqual(observed[image_index + 1], "/sure-approve-repo/sure/skills/sure_onboard/scripts/run_server_smoke.py")
         # The smoke calls the tool: list-only would skip the weight load.
         self.assertNotIn("--list-only", observed)
         arguments = json.loads(observed[observed.index("--arguments-json") + 1])
@@ -309,7 +314,7 @@ class ContainerServerSmokeTests(unittest.TestCase):
                 if argument == "--mount":
                     parts = dict(part.split("=", 1) for part in command[index + 1].split(",") if "=" in part)
                     mounts[parts["dst"]] = Path(parts["src"]).as_posix()
-            start = command.index(str(self.binding["target_image_ref"])) + 2
+            start = command.index(str(self.binding["target_image_ref"])) + 1
             local_command = [sys.executable, "-I", *command[start:]]
             for index, argument in enumerate(local_command):
                 for target, source in mounts.items():

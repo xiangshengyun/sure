@@ -1137,6 +1137,12 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
         smoke_env = {**_declared_server_env(server), "MODEL_DIR": model_target, "RUN_DIR": output_target}
         command = [
             "docker", "run", "--rm", "--init",
+            # An image may declare its own ENTRYPOINT (the approved OpenMOSS
+            # image does). Without this, docker would prepend it to the
+            # interpreter below and run `python3 python3 run_server_smoke.py`;
+            # name the approved interpreter as the entrypoint, exactly as the
+            # inference surface does.
+            "--entrypoint", str(container["python_executable"]),
             "--mount", f"type=bind,src={candidate},dst={model_target},readonly",
             "--mount", f"type=bind,src={runner_root},dst={repo_target},readonly",
             "--mount", f"type=bind,src={output_dir},dst={output_target}",
@@ -1146,7 +1152,7 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
         if container.get("gpu_required") is True:
             command.extend(["--gpus", "all"])
         command.extend([
-            str(binding["target_image_ref"]), str(container["python_executable"]),
+            str(binding["target_image_ref"]),
             f"{repo_target}/sure/skills/sure_onboard/scripts/run_server_smoke.py",
             "--server-command", json.dumps(container["server_command"]),
             "--protocol", str(protocol),
@@ -1185,6 +1191,29 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
             "called_tool": arguments is not None,
             "arguments": arguments or {},
         }
+
+
+_VALIDATION_STAGES = ("import", "load", "infer", "contract")
+
+
+def _validation_evidence(artifacts_root: Path) -> dict[str, bool]:
+    """Whether each validate.py stage reported success to disk.
+
+    The local container CLI has been seen to return 0 for a container that
+    exited 1, so an exit code alone does not prove the smoke ran. The producer
+    contract persists artifacts/<stage>_result.json on every run, and stale
+    copies are removed before the smoke, so these entries can only come from it.
+    """
+    evidence: dict[str, bool] = {}
+    for stage in _VALIDATION_STAGES:
+        key = f"{stage}_passed" if stage != "contract" else "contract_passed"
+        try:
+            payload = json.loads((artifacts_root / f"{stage}_result.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            evidence[stage] = False
+            continue
+        evidence[stage] = isinstance(payload, dict) and payload.get(key) is True
+    return evidence
 
 
 def verify_runtime(run_dir: Path) -> dict[str, Any]:
@@ -1275,10 +1304,19 @@ def verify_runtime(run_dir: Path) -> dict[str, Any]:
                 os.chmod(overlay_root, 0o777)
                 for name in overlay_files:
                     os.chmod(Path(overlay_root) / name, 0o666)
+            # A stage result copied from onboarding would let a failed smoke read
+            # as passed; only what this run writes may be counted as evidence.
+            for stage in _VALIDATION_STAGES:
+                (validation_output / f"{stage}_result.json").unlink(missing_ok=True)
+            (validation_output / "validation.log").unlink(missing_ok=True)
             command = [
                 "docker",
                 "run",
                 "--rm",
+                # The image ENTRYPOINT would otherwise be prepended to this
+                # interpreter, turning it into `python3 python3 validate.py`.
+                "--entrypoint",
+                str(container["python_executable"]),
                 "--mount",
                 f"type=bind,src={candidate},dst={model_target},readonly",
                 "--mount",
@@ -1288,11 +1326,21 @@ def verify_runtime(run_dir: Path) -> dict[str, Any]:
             ]
             if container.get("gpu_required") is True:
                 command.extend(["--gpus", "all"])
-            command.extend([image_ref, str(container["python_executable"]), f"{model_target}/validate.py"])
+            # ponytail: GPU partition_command dropped with the GPU branch; restore
+            # when gpu_partition lands upstream.
+            command.extend([image_ref, f"{model_target}/validate.py"])
             completed = subprocess.run(command, capture_output=True, text=True, timeout=1800, check=False)
-        smoke = {"command": command, "pull_stdout_sha256": sha256_bytes(pull.stdout.encode()), "exit_code": completed.returncode, "stdout_sha256": sha256_bytes(completed.stdout.encode()), "stderr": completed.stderr[-2000:]}
+            validation_evidence = _validation_evidence(validation_output)
+        smoke = {"command": command, "pull_stdout_sha256": sha256_bytes(pull.stdout.encode()), "exit_code": completed.returncode, "stdout_sha256": sha256_bytes(completed.stdout.encode()), "stderr": completed.stderr[-2000:], "validation_evidence": validation_evidence}
     if completed.returncode != 0:
         raise ApprovalError(f"candidate runtime verification failed: {smoke['stderr']}")
+    if runtime_kind == "container" and not all(smoke["validation_evidence"].values()):
+        failed = ", ".join(stage for stage, passed in smoke["validation_evidence"].items() if not passed)
+        raise ApprovalError(
+            "candidate runtime verification did not persist a passing result for: "
+            f"{failed}; the local container CLI can report exit code 0 for a failed run, "
+            f"so this smoke trusts the stage artifacts: {smoke['stderr']}"
+        )
     server_smoke = _verify_container_server(candidate, binding) if runtime_kind == "container" else None
     after, _, _ = tree_digest(candidate, publication=True)
     if after != current_digest:

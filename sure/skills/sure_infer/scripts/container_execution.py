@@ -8,6 +8,8 @@ import os
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
+import yaml
+
 from harness_runtime import harness_runtime_from_eval_input
 from deployment_binding import DEPLOYMENT_BINDING_V1, DEPLOYMENT_BINDING_V2
 from docker_runtime import resolve_docker_binary
@@ -191,6 +193,81 @@ def resolve_container_harness_runtime(
     return {**host_runtime, "execution_source": "active_injected_runtime"}, True
 
 
+MODEL_PATH_ENV_KEYS = ("MODEL_PATH", "MODEL_DIR", "SURE_MODEL_DIR")
+
+
+def _posix_within(path: str, root: str) -> bool:
+    candidate = PurePosixPath(path)
+    base = PurePosixPath(root)
+    return candidate == base or base in candidate.parents
+
+
+def _bundle_server_config(model_source: Path) -> dict[str, Any]:
+    path = model_source / "config.yaml"
+    if not path.is_file():
+        return {}
+    try:
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
+def validate_infer_path_contract(model_source: Path, container: dict[str, Any]) -> None:
+    """Refuse declared paths that point the server away from the mounted bundle.
+
+    The bundle is mounted at `model_mount.target` and that mount is the only
+    model root the container receives. A `server_command` script or a
+    `config.yaml server.env` path naming another root reads a directory that
+    does not exist -- the failure that produced empty predictions with no error
+    and was only found after a full run. `working_dir` is not required to equal
+    the target (sure_trans mounts the model elsewhere), so containment, not
+    equality, is the rule.
+
+    A legacy inventory with no `external_command_paths` predates the allowlist
+    and is left alone, so an already-approved model keeps running unchanged.
+    """
+    target = str((container.get("model_mount") or {}).get("target") or "")
+    working_dir = str(container.get("working_dir") or "")
+    external = {str(item) for item in container.get("external_command_paths") or []}
+    if "external_command_paths" in container:
+        for item in list(container.get("server_command") or [])[1:]:
+            if not isinstance(item, str) or not PurePosixPath(item).is_absolute():
+                continue
+            if item in external or _posix_within(item, working_dir) or _posix_within(item, target):
+                continue
+            raise ValueError(
+                f"approved server_command entry {item!r} is outside working_dir {working_dir!r} "
+                f"and model mount {target!r}; if the image owns that file, declare it in "
+                "model_runtime.external_command_paths and re-onboard"
+            )
+    server = _bundle_server_config(model_source).get("server")
+    env = server.get("env") if isinstance(server, dict) else None
+    if not isinstance(env, dict):
+        return
+    for key, value in env.items():
+        key = str(key)
+        if key not in (*MODEL_PATH_ENV_KEYS, "PYTHONPATH", "PYTHONHOME"):
+            continue
+        if not isinstance(value, str) or not PurePosixPath(value).is_absolute():
+            continue
+        entries = value.split(":") if key == "PYTHONPATH" else [value]
+        for entry in entries:
+            if not PurePosixPath(entry).is_absolute():
+                continue
+            # An image-provided import root has nothing to do with the bundle;
+            # only a path that names a model root is the bundle speaking about
+            # itself from another location.
+            if key in ("PYTHONPATH", "PYTHONHOME") and "model" not in PurePosixPath(entry).parts:
+                continue
+            if _posix_within(entry, target):
+                continue
+            raise ValueError(
+                f"config.yaml server.env.{key} entry {entry!r} is outside the approved model mount "
+                f"{target!r}; the server would read a directory the container never received"
+            )
+
+
 def build_local_container_command(
     *,
     surface: dict[str, Any],
@@ -218,6 +295,7 @@ def build_local_container_command(
         output_source.mkdir(parents=True, exist_ok=True)
     if not PurePosixPath(output_target).is_absolute():
         raise ValueError("approved deployment result mount target is invalid")
+    validate_infer_path_contract(model_source, container)
     harness_runtime, harness_mounted_from_repo = resolve_container_harness_runtime(
         binding,
         host_harness_runtime,

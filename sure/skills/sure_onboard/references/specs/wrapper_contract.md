@@ -249,7 +249,9 @@ def predict(self, input_data: Any) -> Any:
   `server.working_dir`, with `server.env` merged into its environment -- so a
   wrapper that loads its weights from `MODEL_PATH` is tested, not starved. The
   evidence lands in `<run_dir>/artifacts/server_smoke.json`; a tool whose input is
-  not the fixture audio is driven with `<run_dir>/artifacts/server_smoke_input.json`.
+  not the fixture audio is driven with `<run_dir>/artifacts/server_smoke_input.json`,
+  which staging copies into the bundle so approval can drive the same call after the
+  run directory is gone.
   A model without `server.command` is served by the harness fallback wrapper, which
   is MCP by construction, and the step is recorded as skipped.
 

@@ -183,6 +183,10 @@ def build_inventory(model_dir: Path, run_dir: Path) -> dict[str, Any]:
             "python_executable": model_runtime["python_executable"],
             "working_dir": runtime["working_dir"],
             "server_command": server_command or ["python", "server.py"],
+            # The allowlist onboarding accepted for server scripts the image
+            # owns. Spending it at inference is what lets the preflight refuse
+            # a path outside the mount without refusing an image-provided one.
+            "external_command_paths": list(runtime.get("external_command_paths") or []),
             "tool_names": [
                 str(tool["name"])
                 for tool in config.get("tools", [])

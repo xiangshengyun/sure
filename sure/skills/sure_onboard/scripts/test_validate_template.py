@@ -124,6 +124,11 @@ class ValidateTemplateTest(unittest.TestCase):
         stage_model_artifacts = load_stage_model_artifacts()
         self.assertIn("sample_outputs.jsonl", stage_model_artifacts.OPTIONAL_RUN_ARTIFACTS)
 
+    def test_the_authored_smoke_input_is_staged(self):
+        # Approval consumes it from the bundle after this run directory is gone.
+        stage_model_artifacts = load_stage_model_artifacts()
+        self.assertIn("server_smoke_input.json", stage_model_artifacts.OPTIONAL_RUN_ARTIFACTS)
+
     def test_declared_dtype_constructor_and_load_evidence_match_schema(self):
         self.module.MODEL_DIR = Path(self.temp_dir.name)
         (self.module.MODEL_DIR / "config.yaml").write_text("model:\n  dtype: torch.float32\n")

@@ -256,6 +256,21 @@ class DeploymentBindingTests(unittest.TestCase):
         ).hexdigest()
         write_json(self.artifacts / "deployment_ready.json", marker)
 
+    def _resealed_inventory(self, **fields: object) -> None:
+        """Rewrite container_runtime and reseal the marker over it."""
+        path = self.artifacts / "runtime_inventory.json"
+        inventory = json.loads(path.read_text())
+        inventory["container_runtime"].update(fields)
+        write_json(path, inventory)
+
+        marker = json.loads((self.artifacts / "deployment_ready.json").read_text())
+        hashes = marker["required_artifact_sha256"]
+        hashes["artifacts/runtime_inventory.json"] = sha256(path)
+        marker["bundle_identity_sha256"] = hashlib.sha256(
+            json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        write_json(self.artifacts / "deployment_ready.json", marker)
+
     def test_derives_legacy_image_runtime_root_from_manifest(self) -> None:
         inventory = json.loads((self.artifacts / "runtime_inventory.json").read_text())
         legacy_binding = self._image_runtime_binding()
@@ -789,6 +804,62 @@ class DeploymentBindingTests(unittest.TestCase):
         self.assertNotIn(image_python, " ".join(command))
         self.assertTrue(provenance["harness_runtime_mounted_from_repo"])
         self.assertEqual(provenance["harness_runtime"]["execution_source"], "active_injected_runtime")
+
+    def _container_command(self, binding: dict) -> list[str]:
+        command, _ = build_local_container_command(
+            surface={"env": {}},
+            eval_input={
+                "model": {"deployment_binding": binding},
+                "runtime": {"run_dir": str(self.output), "harness_runtime": self._runtime_binding()},
+                "datasets": [],
+            },
+            control_run_dir=self.control,
+            entrypoint=self.entrypoint,
+            repo_root=self.repo,
+            device_request="cpu",
+        )
+        return command
+
+    def test_infer_preflight_refuses_a_server_script_outside_the_mount(self) -> None:
+        # The bundle is mounted at /workspace/model; a server script naming
+        # another root reads a path the container never receives.
+        self._resealed_inventory(server_command=["python", "/model/server.py"], external_command_paths=[])
+        binding = load_deployment_binding(self.model, "demo")
+
+        with self.assertRaisesRegex(ValueError, "outside working_dir"):
+            self._container_command(binding)
+
+    def test_infer_preflight_allows_a_declared_external_server_script(self) -> None:
+        self._resealed_inventory(
+            server_command=["python", "/opt/vendor/server.py"],
+            external_command_paths=["/opt/vendor/server.py"],
+        )
+        binding = load_deployment_binding(self.model, "demo")
+
+        self.assertIn(self.image_ref, self._container_command(binding))
+
+    def test_a_legacy_inventory_without_the_allowlist_is_not_judged(self) -> None:
+        # Old bundles predate the allowlist; refusing their server_command
+        # would strand models that already passed approval and used to run.
+        self._resealed_inventory(server_command=["python", "/opt/vendor/server.py"])
+        binding = load_deployment_binding(self.model, "demo")
+
+        self.assertNotIn("external_command_paths", binding["container"])
+        self.assertIn(self.image_ref, self._container_command(binding))
+
+    def test_infer_preflight_refuses_a_config_env_model_path_outside_the_mount(self) -> None:
+        (self.model / "config.yaml").write_text(
+            "server:\n  env:\n    MODEL_PATH: /model/checkpoints\n", encoding="utf-8"
+        )
+        binding = load_deployment_binding(self.model, "demo")
+
+        with self.assertRaisesRegex(ValueError, "server.env.MODEL_PATH"):
+            self._container_command(binding)
+
+        (self.model / "config.yaml").write_text(
+            "server:\n  env:\n    MODEL_PATH: /workspace/model/checkpoints\n", encoding="utf-8"
+        )
+        self.assertIn(self.image_ref, self._container_command(binding))
 
 
 

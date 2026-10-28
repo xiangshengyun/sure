@@ -738,6 +738,19 @@ def _refuse_renamed_bundle_root(entry: str, model_target: str, label: str) -> No
     )
 
 
+def _redacted_env(env: dict[str, Any]) -> dict[str, str]:
+    """An env snapshot safe to write into approval evidence.
+
+    The keys are what a reviewer needs to compare against the image and the
+    mount; a value under a credential-shaped name is not.
+    """
+    secret = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|CREDENTIAL)", re.IGNORECASE)
+    return {
+        str(key): "***" if secret.search(str(key)) else str(value)
+        for key, value in sorted(env.items())
+    }
+
+
 def _declared_server_env(server: dict[str, Any]) -> dict[str, str]:
     """The `server.env` config.yaml declares, as the infer client applies it.
 
@@ -996,16 +1009,58 @@ def _smoke_output_path(name: str, output_target: str, suffix: str) -> str:
     return str(PurePosixPath(output_target) / f"smoke_{safe}{suffix}")
 
 
+def _authored_smoke_arguments(
+    authored: Path,
+    required: list[str],
+    roots: list[Path],
+    model_target: str,
+    output_target: str,
+    suffix: str,
+) -> dict[str, Any]:
+    """The arguments an authored `artifacts/server_smoke_input.json` declares.
+
+    That file is the escape hatch for a tool the fixture cannot drive (a TTS
+    text prompt, a model that needs a second non-audio input). It lives in the
+    bundle so approval, which runs after onboarding's transient run directory is
+    gone, can still make the call. Values that name a file inside the bundle are
+    rewritten to the mount; literals (prompts, languages) pass through; output
+    paths are resynthesized under the writable mount, as inference owns them.
+    """
+    body = read_json(authored)
+    declared = body.get("arguments") if isinstance(body.get("arguments"), dict) else body
+    if not isinstance(declared, dict) or not declared:
+        raise ApprovalError(f"{authored} must hold a non-empty arguments object")
+    arguments: dict[str, Any] = {}
+    for name, value in declared.items():
+        name = str(name)
+        if _is_output_argument(name):
+            arguments[name] = _smoke_output_path(name, output_target, suffix)
+        elif isinstance(value, str):
+            try:
+                arguments[name] = _container_argument(value, roots, model_target, name)
+            except ApprovalError:
+                # A literal prompt is not a bundle path; only paths are rewritten.
+                arguments[name] = value
+        else:
+            arguments[name] = value
+    missing = [name for name in required if name not in arguments and not _is_output_argument(name)]
+    if missing:
+        raise ApprovalError(f"{authored} declares no value for the required tool input(s) {', '.join(missing)}")
+    for name in required:
+        if name not in arguments:
+            arguments[name] = _smoke_output_path(name, output_target, suffix)
+    return arguments
+
+
 def _fixture_arguments(
     candidate: Path, contract: Any, model_target: str, output_target: str
-) -> dict[str, str] | None:
+) -> dict[str, Any]:
     """The arguments the container smoke calls the tool with, taken from the bundle.
 
     `--list-only` proves the server starts and advertises a contract; it does not
     prove the tool answers. A model that loads its weights on the first call, or
     resolves them relative to the mount, passes that and fails at inference --
-    which is the failure this smoke exists to catch, so the call is made whenever
-    the bundle can drive one.
+    which is the failure this smoke exists to catch, so the call is always made.
 
     Every bundle carries `artifacts/fixture_manifest.json` (a mandatory sidecar),
     and its paths are spelled against the host that onboarded the bundle, so each
@@ -1017,13 +1072,11 @@ def _fixture_arguments(
     one. A required *output* field is synthesized under the writable mount, since
     inference does the same and the bundle never records one.
 
-    Returns None when the tool takes an input no fixture supplies -- a TTS prompt,
-    say. Onboard drives those from an authored `server_smoke_input.json` that
-    lives in the transient run directory and never reaches the bundle, so refusing
-    here would reject every such model. The caller falls back to `--list-only` and
-    records that this smoke could not load weights, rather than passing silently.
-    A required *input* the fixture cannot fill is still refused: that bundle is
-    one onboarding could drive, so refusing it here is a defect in the bundle.
+    When the fixture cannot drive the tool, `artifacts/server_smoke_input.json`
+    is the bundle's own statement of the arguments to send. If neither can, the
+    bundle is refused: falling back to `--list-only` would approve a model whose
+    tool was never called. A tool whose schema requires nothing is called with
+    `{}`, which its own contract accepts.
     """
     manifest_path = candidate / "artifacts" / "fixture_manifest.json"
     manifest = read_json(manifest_path) if manifest_path.is_file() else {}
@@ -1037,7 +1090,7 @@ def _fixture_arguments(
     sample = samples[0] if isinstance(samples, list) and samples and isinstance(samples[0], dict) else {}
     roles = sample.get("audio_roles") if isinstance(sample.get("audio_roles"), dict) else {}
     props = list(contract.properties)
-    required = contract.required
+    required = list(contract.required)
 
     def supplied(name: str) -> str:
         value = roles.get(name)
@@ -1046,15 +1099,26 @@ def _fixture_arguments(
         fallback = sample.get("audio_path") if name == "audio_path" else None
         return fallback if isinstance(fallback, str) and fallback else ""
 
+    sample_audio = sample.get("audio_path")
+    suffix = Path(sample_audio).suffix if isinstance(sample_audio, str) and sample_audio else ".wav"
     if not any(supplied(name) for name in [*required, *props]):
-        return None
+        authored = candidate / "artifacts" / "server_smoke_input.json"
+        if authored.is_file():
+            return _authored_smoke_arguments(authored, required, roots, model_target, output_target, suffix)
+        if not required:
+            return {}
+        fields = ", ".join([*required, *props])
+        raise ApprovalError(
+            f"the approved bundle cannot drive the tool {contract.name!r} its config.yaml declares: "
+            f"artifacts/fixture_manifest.json supplies no input and artifacts/server_smoke_input.json "
+            f'is absent. Add that file with {{"arguments": {{...}}}} naming values inference would send '
+            f"(inputs: {fields}), or rerun /sure_onboard with a fixture that fills them."
+        )
     # The suffix the model writes is its own to declare, not something to read
     # off whichever field happened to fill first: an SE fixture's first fillable
     # field can be a `.mp3` prompt while the output is `.wav`. The sample's own
     # audio is the statement the bundle makes about its media type.
-    sample_audio = sample.get("audio_path")
-    suffix = Path(sample_audio).suffix if isinstance(sample_audio, str) and sample_audio else ".wav"
-    arguments: dict[str, str] = {}
+    arguments: dict[str, Any] = {}
     missing: list[str] = []
     for name in required:
         if supplied(name):
@@ -1098,8 +1162,6 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
     output_target = "/sure-approve-output"
     contracts = tool_contracts(config, source=f"{candidate.name}/config.yaml")
     arguments = _fixture_arguments(candidate, contracts[0], model_target, output_target)
-    if arguments is None and protocol != MCP_SERVER_PROTOCOL:
-        return {"status": "skipped", "reason": "no fixture arguments for the declared JSONL server", "protocol": protocol, "called_tool": False}
     protocol = "mcp" if protocol == MCP_SERVER_PROTOCOL else "jsonl"
     model = config.get("model") if isinstance(config.get("model"), dict) else {}
     fixture_path = candidate / "artifacts" / "fixture_manifest.json"
@@ -1161,7 +1223,6 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
             "--input-schema-json", json.dumps(contracts[0].input_schema),
             "--arguments-json", json.dumps(arguments or {}),
             "--env-json", json.dumps(smoke_env),
-            *(["--list-only"] if arguments is None else []),
             "--cwd", working_dir,
             "--timeout", f"{timeout:.0f}",
             "--produces", f"{output_target}/{produces.name}",
@@ -1188,10 +1249,11 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
             "protocol": protocol,
             "task": task,
             "model_mount": model_target,
-            # A list-only pass proves startup and the advertised contract, not
-            # that the tool answers; say which one this was so a reviewer does not
-            # read it as a weight load.
-            "called_tool": arguments is not None,
+            # The environment the server was actually started with, redacted:
+            # a bundle that fails at inference is diagnosed from this receipt,
+            # not by reproducing the container by hand.
+            "env": _redacted_env(smoke_env),
+            "called_tool": True,
             "arguments": arguments or {},
         }
 
@@ -1217,6 +1279,46 @@ def _validation_evidence(artifacts_root: Path) -> dict[str, bool]:
             continue
         evidence[stage] = isinstance(payload, dict) and payload.get(key) is True
     return evidence
+
+
+def _container_image_config(image_ref: str) -> dict[str, Any]:
+    """The configuration the pinned image actually carries.
+
+    The Dockerfile is only one contributor: ENV and WORKDIR may come from the
+    base image, and ARG expansion happens at build time. Recording the resolved
+    config next to the smoke evidence is what lets a failed inference be
+    explained without rebuilding or re-running the container by hand. A failed
+    inspect is recorded, not raised: this is evidence, not the gate.
+    """
+    try:
+        completed = subprocess.run(
+            ["docker", "image", "inspect", image_ref, "--format", "{{json .Config}}"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"error": str(exc)}
+    if completed.returncode != 0:
+        return {"error": (completed.stderr or completed.stdout).strip()[-2000:]}
+    try:
+        config = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return {"error": "docker image inspect did not return Config JSON"}
+    if not isinstance(config, dict):
+        return {"error": "docker image inspect returned a malformed Config"}
+    settings: dict[str, Any] = {}
+    for entry in config.get("Env") or []:
+        key, separator, value = str(entry).partition("=")
+        if separator:
+            settings[key] = value
+    return {
+        "working_dir": config.get("WorkingDir"),
+        "env": _redacted_env(settings),
+        "entrypoint": config.get("Entrypoint"),
+        "cmd": config.get("Cmd"),
+    }
 
 
 def verify_runtime(run_dir: Path) -> dict[str, Any]:
@@ -1345,10 +1447,15 @@ def verify_runtime(run_dir: Path) -> dict[str, Any]:
             f"so this smoke trusts the stage artifacts: {smoke['stderr']}"
         )
     server_smoke = _verify_container_server(candidate, binding) if runtime_kind == "container" else None
+    image_config = (
+        _container_image_config(str(binding.get("target_image_ref") or ""))
+        if runtime_kind == "container"
+        else None
+    )
     after, _, _ = tree_digest(candidate, publication=True)
     if after != current_digest:
         raise ApprovalError("runtime verification mutated the candidate bundle")
-    return {"schema": "sure.approve.runtime_verification.v1", "status": "passed", "verified_at": now_iso(), "runtime_kind": runtime_kind, "candidate_digest_before": current_digest, "candidate_digest_after": after, "binding": binding, "server_contract": contract, "smoke": smoke, "server_smoke": server_smoke}
+    return {"schema": "sure.approve.runtime_verification.v1", "status": "passed", "verified_at": now_iso(), "runtime_kind": runtime_kind, "candidate_digest_before": current_digest, "candidate_digest_after": after, "binding": binding, "server_contract": contract, "smoke": smoke, "server_smoke": server_smoke, "image_config": image_config}
 
 
 def verify_decision(review_path: Path, decision: str, rationale: str | None) -> dict[str, Any]:

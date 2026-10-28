@@ -56,6 +56,19 @@ class ContainerValidationMountTests(unittest.TestCase):
             def run(command: list[str], **_: object) -> mock.Mock:
                 if command[1] == "pull":
                     return mock.Mock(returncode=0, stdout="", stderr="")
+                if command[1:3] == ["image", "inspect"]:
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps(
+                            {
+                                "WorkingDir": "/workspace/model",
+                                "Env": ["MODEL_PATH=/workspace/model/checkpoints", "API_TOKEN=secret"],
+                                "Entrypoint": ["/usr/local/bin/python3"],
+                                "Cmd": None,
+                            }
+                        ),
+                        stderr="",
+                    )
                 observed["command"] = command
                 mounts = [value for value in command if value.startswith("type=bind")]
                 observed["mounts"] = mounts
@@ -102,6 +115,12 @@ class ContainerValidationMountTests(unittest.TestCase):
         self.assertTrue(any(value.endswith(",dst=/workspace/model/artifacts") for value in mounts))
         self.assertEqual(observed["copied_files"], ["artifact_manifest.json", "fixture_manifest.json"])
         self.assertEqual(result["status"], "passed")
+        # The approval receipt records the image's resolved config, not just the
+        # Dockerfile text, so a later failure can be explained without a rebuild.
+        self.assertEqual(result["image_config"]["working_dir"], "/workspace/model")
+        self.assertEqual(result["image_config"]["env"]["MODEL_PATH"], "/workspace/model/checkpoints")
+        self.assertEqual(result["image_config"]["env"]["API_TOKEN"], "***")
+        self.assertEqual(result["image_config"]["entrypoint"], ["/usr/local/bin/python3"])
 
     def test_validate_smoke_overrides_the_image_entrypoint(self) -> None:
         _, _, observed = self._verify()

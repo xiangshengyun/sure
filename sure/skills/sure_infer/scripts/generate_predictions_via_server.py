@@ -1346,10 +1346,11 @@ def main() -> int:
     if args.worker_mode:
         # The Worker owns the GPU; an approved server env must not widen it.
         env["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_VISIBLE_DEVICES"]
+    env = enforce_gpu_context(env, device="cpu" if str(args.device).lower() == "cpu" else None)
+    if args.worker_mode:
         worker_device = _worker_model_device(args.device or env.get("DEVICE"))
         env["DEVICE"] = worker_device
         env["SURE_EVAL_DEVICE_ACTUAL"] = worker_device
-    env = enforce_gpu_context(env, device="cpu" if str(args.device).lower() == "cpu" else None)
     protocol_id = args.protocol
     protocol_resolution = _resolve_protocol_parameters(protocol_id, model_dir, env)
 

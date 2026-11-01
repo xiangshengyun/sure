@@ -65,6 +65,29 @@ class SureSkillTests(unittest.TestCase):
         self.assertTrue(result["diagnostics"])
         self.assertTrue(bad.exists())
 
+    @unittest.skipUnless(os.name == "posix", "Unix bootstrap and symlinks")
+    def test_bootstrap_configures_native_init_with_ambient_credentials(self):
+        tools = self.root / "bin"
+        tools.mkdir()
+        log = self.root / "bootstrap.log"
+        for name in ("node", "npm", "uv", "python3", "git"):
+            stub = tools / name
+            stub.write_text('#!/bin/sh\nprintf "%s\\n" "$0 $*" >> "$BOOTSTRAP_TEST_LOG"\n')
+            stub.chmod(0o755)
+        env = {"PATH": str(tools) + os.pathsep + os.defpath, "HOME": str(self.root),
+               "AGENTS_HOME": str(self.root / "agents"), "BOOTSTRAP_TEST_LOG": str(log),
+               "SURE_INIT_ARGUMENTS": "--option openai --model fixture-model"}
+        completed = subprocess.run(["bash", str(runner.ROOT / "skills/sure/scripts/bootstrap.sh"), str(self.root)],
+                                   env=env, capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        calls = log.read_text()
+        self.assertIn("git submodule update --init --recursive", calls)
+        self.assertIn("npm ci --ignore-scripts", calls)
+        self.assertIn("npm run sure:doctor", calls)
+        self.assertIn("run.py list", calls)
+        self.assertIn("run.py init --arguments --option openai --model fixture-model --trust", calls)
+        self.assertEqual((self.root / "agents/skills/sure").readlink(), self.root / "skills/sure")
+
     def test_plans_preserve_unicode_quotes_backslashes_and_apostrophes(self):
         for name in WORKFLOWS + ["init", "resume"]:
             arguments = "fixture-run" if name == "resume" else "model_input_path=/tmp/O'Brien/input.yaml"
@@ -152,6 +175,9 @@ class SureSkillTests(unittest.TestCase):
                     self.assertEqual(result["status"], "success")
                     self.assertTrue((output / "result.json").is_file())
                     self.assertTrue((output / "artifacts/gate-observed.json").is_file())
+                    self.assertTrue(Path(result["artifacts_path"]).is_symlink())
+                    self.assertEqual(Path(result["artifacts_path"]).resolve(),
+                                     (Path(result["run_dir"]) / "artifacts").resolve())
                     self.assertEqual(result["trace_summary"]["finish_repairs"], 1)
                     self.assertEqual(result["trace_summary"]["tool_calls"], 1)
                     self.assertTrue(Path(result["manifest_path_snapshot"]).is_file())

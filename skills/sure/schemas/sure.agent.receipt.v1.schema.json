@@ -17,6 +17,8 @@
     "receipt_path": {"type": "string"},
     "evidence_path": {"type": "string"},
     "manifest_path": {"type": "string"},
+    "artifacts_path": {"type": "string"},
+    "artifacts_target": {"type": "string"},
     "products": {"type": "array", "items": {"type": "string"}},
     "error": {"type": "string"},
     "trace_summary": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}

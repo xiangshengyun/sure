@@ -18,8 +18,19 @@ already available):
 git clone <SURE_REPOSITORY_URL> sure && cd sure
 git submodule update --init --recursive
 node --version && uv --version          # Node >=22.19; uv is required
-./skills/sure/scripts/bootstrap.sh      # npm ci, runtime download, doctor, symlink
+./skills/sure/scripts/bootstrap.sh      # npm ci, doctor, discovery, symlink
 ```
+
+To configure and validate a provider/model in the same command, set the native
+`/sure_init` arguments before bootstrap. Credentials remain in the normal
+environment or OAuth store:
+
+```bash
+SURE_INIT_ARGUMENTS='--option openai --model gpt-5.5' ./skills/sure/scripts/bootstrap.sh
+```
+
+Without `SURE_INIT_ARGUMENTS`, bootstrap checks discovery and leaves provider
+initialization for `run.py init`.
 
 The agent can perform cloning, submodule setup, dependency installation,
 doctor, symlink creation, and runtime download. A human must complete OAuth
@@ -64,7 +75,10 @@ For long or quoted input use `--args-file`; use `--output-dir` for every
 workflow that produces artifacts. `--dry-run` validates discovery and shows the
 native request without starting a run. `--trust` is only for a checkout the
 user trusts. The command returns JSON and writes a durable receipt under
-`.sure/agent-invocations/<invocation_id>/receipt.json`.
+`.sure/agent-invocations/<invocation_id>/receipt.json`. Completed native runs
+also expose `receipt_dir/artifacts` as a symlink to the authoritative
+`.sure/runs/<run_id>/artifacts` directory, so a calling agent or user can inspect
+or repair evidence and then resume the reported run when supported.
 
 A typical end-to-end sequence is:
 

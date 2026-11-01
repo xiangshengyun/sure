@@ -36,6 +36,9 @@ Use `--output-dir ABSOLUTE_PATH` for a new workflow's native `result.json` and
 artifact mirror. The native site policy validates the path. Initialization and
 resume instead use their native manifest/run locations; their invocation logs
 and receipt still get a fresh directory under `.sure/agent-invocations/`.
+Every completed native run also exposes `receipt_dir/artifacts` as a symlink to
+the authoritative run artifacts, so a calling agent or user can inspect and
+repair evidence without guessing the run path.
 
 The wrapper exits 0 only with current correlated native success evidence. A process that
 exits 0 without a result is reported as `incomplete`; an old success file is never

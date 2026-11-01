@@ -369,6 +369,8 @@ def invoke(options, root=ROOT):
                                            deadline, grace, stopped, progress)
                 result["exit_code"] = code
                 reply = dispatch_reply(log_path, request)
+                if reply:
+                    result.update({key: reply[key] for key in ("run_id", "run_dir") if key in reply})
                 if reason:
                     result.update(status=reason, error="Native process tree was stopped before returning.")
                     if reply:
@@ -390,6 +392,18 @@ def invoke(options, root=ROOT):
         except (ValueError, OSError, TypeError) as error:
             result.update(status="blocked", error=str(error))
         finally:
+            try:
+                if isinstance(result.get("run_dir"), str):
+                    artifacts_target = Path(result["run_dir"]) / "artifacts"
+                    if artifacts_target.is_dir():
+                        artifacts_link = receipt_dir / "artifacts"
+                        if artifacts_link.exists() or artifacts_link.is_symlink():
+                            artifacts_link.unlink()
+                        artifacts_link.symlink_to(artifacts_target, target_is_directory=True)
+                        result["artifacts_path"] = str(artifacts_link)
+                        result["artifacts_target"] = str(artifacts_target)
+            except OSError as error:
+                result["artifacts_link_error"] = str(error)
             result["finished_at"] = now()
             publish("finished")
         if result["status"] == "cancelled":

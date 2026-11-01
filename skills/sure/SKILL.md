@@ -1,103 +1,117 @@
 ---
 name: sure
-description: Operate the complete SURE audio-model workflow through its guarded harness, including provider initialization, model discovery, onboarding, transformation, human approval, inference, evaluation, agent-chain evaluation, and interrupted-run recovery.
+description: One-command setup and guarded end-to-end SURE model workflow.
 ---
 
 # SURE
 
-Use this skill as the entry point for the whole SURE system. Resolve this skill
-directory through symlinks; the harness checkout is two directories above it.
-Keep that checkout and its submodule available. This folder alone is not the
-engine, and the calling agent's provider login does not configure SURE's provider.
+This is the complete operating manual for the external SURE bridge. The bridge
+is a thin client over the native harness: every workflow keeps native hooks,
+locks, approval gates, correlated evidence, and process cancellation.
 
-## Setup and invocation
+## One-time bootstrap
 
-Follow the checkout's `README.md` Quick Start: Node >=22.19, Git, uv, initialized
-submodules, and `npm ci --ignore-scripts`. Run `npm run sure:doctor` from the
-checkout. Site policy and provider credentials are independent; inspect
-`npm run sure:site-info` rather than replacing a bundled or local policy.
-First use may download locked Python runtimes. Model/provider calls may use the
-configured account; honor the user's evaluation scope and resource constraints.
-
-The helper needs Python 3.10 or newer. If no Python is installed, use
-`uv run --no-project --python 3.11 /path/to/sure/skills/sure/scripts/run.py list`
-instead; uv supplies the interpreter without installing project dependencies.
-
-The repository exposes this skill at `.agents/skills/sure`. For use from other
-projects, symlink the absolute `skills/sure` directory into the host's skill
-directory (Codex: `~/.agents/skills/sure`). A host without skill discovery can read
-this file directly. Run the helper by its absolute path from any working directory:
+Run this block from the checkout root (replace the clone URL if your fork is
+already available):
 
 ```bash
-python /path/to/sure/skills/sure/scripts/run.py list
-python /path/to/sure/skills/sure/scripts/run.py feed --arguments 'url=<model-url>' --dry-run
-python /path/to/sure/skills/sure/scripts/run.py feed --arguments 'url=<model-url>' --trust
+git clone <SURE_REPOSITORY_URL> sure && cd sure
+git submodule update --init --recursive
+node --version && uv --version          # Node >=22.19; uv is required
+./skills/sure/scripts/bootstrap.sh      # npm ci, runtime download, doctor, symlink
 ```
 
-`list` returns the installed command manifests and manuals. `--dry-run` only
-plans the native command: it does not test provider auth, gates or inference.
-Pass `--trust` only when the user trusts this checkout; otherwise the native
-harness retains its project-trust check. Use `--args-file PATH` instead of
-`--arguments` for long inputs. Supply credentials through native login/auth
-storage or environment variables, never through arguments or prompt files.
+The agent can perform cloning, submodule setup, dependency installation,
+doctor, symlink creation, and runtime download. A human must complete OAuth
+browser login when a provider requires it and provision credentials or secret
+management access. Never put a key in arguments or prompt files.
 
-The helper first asks the native bridge for the installed, validated command
-manifest, including `.sure/skills` project overrides. It then sends one
-structured JSON request through native `/sure_invoke`. Arguments remain an
-opaque native string and `output_dir` is a typed field, preserving Unicode,
-quotes, apostrophes and Windows paths. The native command preserves hooks,
-`sure_update_state`, `sure_finish`, runtime locks and human gates. It checks
-correlated terminal records, manifests and products rather than interpreting
-fluent text as success.
+The symlink is supported on Unix. Windows needs a developer-mode or
+administrator-created directory junction; this limitation is currently
+unverified by CI.
 
-Every call receives an invocation ID, request and code hashes, append-only
-invocation events, a live receipt, native stdout/stderr, run snapshots and a
-trace summary of tool calls, blocks, errors, finish repairs, continuations and
-provider retries under `.sure/agent-invocations/<id>/`. Timeout and cancellation
-terminate the native process group; competing init, resume and output paths are
-locked.
-Do not run the internal Python scoring/onboarding scripts as a replacement for
-the harness: doing so omits its gate enforcement.
+## Credentials
 
-## Route the request
+The bridge rejects `--api-key` by design. Use the native environment path below
+(or native login, which writes the provider's OAuth token to the pi auth store):
 
-Read only the selected command's current `sure/skills/<command>/SKILL.md` before
-constructing its arguments. Command semantics follow the installed version:
+| Provider(s) | Exact environment variable(s) | One-time human action | Persistent OAuth storage |
+| --- | --- | --- | --- |
+| OpenAI, Azure OpenAI | `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY` | provision key, or `/login` for OAuth | `~/.pi/agent/auth.json` |
+| Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN` | provision key, or `/login anthropic` | `~/.pi/agent/auth.json` |
+| OpenRouter, xAI, Groq, NVIDIA, DeepSeek, Cerebras | `OPENROUTER_API_KEY`, `XAI_API_KEY`, `GROQ_API_KEY`, `NVIDIA_API_KEY`, `DEEPSEEK_API_KEY`, `CEREBRAS_API_KEY` | provision key; `/login` where supported | `~/.pi/agent/auth.json` |
+| Vercel, Z.ai, MiniMax, Moonshot, Mistral | `AI_GATEWAY_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`, `MISTRAL_API_KEY` | provision key | `~/.pi/agent/auth.json` |
+| GitHub Copilot | `COPILOT_GITHUB_TOKEN` | `/login github-copilot` once | `~/.pi/agent/auth.json` |
+| Hugging Face, Together, Fireworks, Baseten | `HF_TOKEN`, `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `BASETEN_API_KEY` | provision key | `~/.pi/agent/auth.json` |
 
-| Request | Helper command | Evidence / handoff |
-| --- | --- | --- |
-| Configure SURE provider, model and authentication | `init` | `.sure/init.json`; noninteractive calls require `--option` and `--model` |
-| Discover a model and collect source evidence | `feed` | model input and onboarding handoff |
-| Build and validate a new runnable model package | `onboard` | model package, runtime inventory, deployment readiness |
-| Adapt an existing Dockerfile / inference implementation | `trans` | standard runtime adapter and deployment readiness |
-| Review and publish a model | `approve` | immutable candidate, human decision, approval receipt |
-| Run an approved model on datasets | `infer` | predictions, inference protocol and generation status |
-| Score or re-score existing predictions | `eval` | evaluation batch, routes, metrics and reports; no model inference |
-| Evaluate an ordered chain of approved models | `agent_eval` | agent product bundle and evaluation batch |
-| Continue a resumable interrupted run | `resume` | same run ID, checkpoint and final manifest |
+Environment credentials are read ambiently for the process and are never copied
+into receipts. OAuth credentials persist in the pi agent auth store; the exact
+location can be overridden by the normal pi configuration directory.
+OAuth login is interactive and must be completed by a human; the bridge cannot
+perform it.
 
-This version has no `/sure_reval`: existing-prediction scoring is `/sure_eval`.
-Check `list` on another checkout rather than inventing missing commands.
-`/sure_init` and `/sure_resume` are native commands, not skill packages.
-See [references/workflows.md](references/workflows.md) for concrete call shapes.
+## Invoke workflows
 
-Initialize when SURE's provider is unconfigured. For a new model, route
-`feed -> onboard` (or `trans`) `-> approve -> infer -> eval` as needed. Existing
-approved models can start at `infer`; existing prediction bundles can start at
-`eval`. Do not rerun completed stages or infer when the request only asks to score.
+Use the absolute bridge path from any directory:
 
-Approval is a two-run workflow: create the review packet, show the concrete
-candidate to the user, then submit their explicit decision. The outer agent
-must not manufacture `decision=approve`. Also surface any checkpoint that needs
-human confirmation; report it as incomplete and preserve the run ID for recovery.
-Do not automatically restart a failed run or bypass a system-failure manifest.
+```bash
+python skills/sure/scripts/run.py list
+python skills/sure/scripts/run.py init --arguments 'provider=openai model=gpt-5.5' --trust
+python skills/sure/scripts/run.py feed --arguments 'model_input_path=/data/model.yaml' --trust
+```
 
-## Return to the caller
+For long or quoted input use `--args-file`; use `--output-dir` for every
+workflow that produces artifacts. `--dry-run` validates discovery and shows the
+native request without starting a run. `--trust` is only for a checkout the
+user trusts. The command returns JSON and writes a durable receipt under
+`.sure/agent-invocations/<invocation_id>/receipt.json`.
 
-Return the helper's status, command, run ID, run directory, manifest/result path,
-artifact paths, and any error/next action. A nonzero helper exit or any status
-other than `success` is not success. Read the actual metric/report artifacts to
-report scores and sample counts. Initialization success only confirms provider
-setup, not model deployment. A successful fixture test proves integration, not
-the quality of a real model. Keep credentials and large model/data payloads out
-of the response and repository.
+A typical end-to-end sequence is:
+
+```text
+init → feed → onboard (or trans) → approve → infer → eval
+```
+
+Approval is two phase: create the review packet, show it to the user, then pass
+their explicit decision through the native approval workflow. Existing approved
+models may start at `infer`; existing prediction bundles may start at `eval`.
+
+## Receipt contract
+
+The machine-readable contract is
+[`schemas/sure.agent.receipt.v1.schema.json`](schemas/sure.agent.receipt.v1.schema.json).
+`status` is `running`, `planned`, `success`, `failed`, `blocked`, `incomplete`,
+`cancelled`, or `timed_out`. Exit codes are 0 for `success` and `planned`, 1
+for `failed`, `blocked`, or `incomplete`, 124 for `timed_out`, and 130 (or
+128+signal on Unix) for `cancelled`; invalid invocation limits return 1/2
+before a native run. Programmatic callers must require `status == success` and
+check `evidence_path`, `run_id`, `manifest_path`, and every relative `products`
+entry. A successful receipt also includes SHA-256 hashes and `trace_summary`;
+these are evidence, not a substitute for reading metric artifacts.
+
+Requests use `sure.agent.request.v1`: `invocation_id` is exactly 32 lowercase
+hex characters; `command` is `sure_init`, `sure_resume`, or a discovered
+`sure_*` workflow; and `arguments` is opaque. Credentials and `output_dir` are
+forbidden inside `arguments`: credentials use ambient environment variables or
+native login, while `output_dir` is the typed field. `init` and `resume` omit
+`output_dir`; resume arguments contain exactly one run ID. Native responses must
+echo the same invocation ID and command.
+
+## Worked fixture example
+
+The following redacted receipts show the actual bridge shape. Paths are shortened
+for readability; each command writes its own receipt directory.
+
+```json
+{"schema":"sure.agent.receipt.v1","invocation_id":"11111111111111111111111111111111","command":"/sure_init","status":"success","exit_code":0}
+{"schema":"sure.agent.receipt.v1","invocation_id":"22222222222222222222222222222222","command":"/sure_feed","status":"success","exit_code":0,"run_id":"20261031-feed-a1b2","evidence_path":".../feed/result.json","products":["model_input_resolved.json"]}
+{"schema":"sure.agent.receipt.v1","invocation_id":"33333333333333333333333333333333","command":"/sure_onboard","status":"success","exit_code":0,"run_id":"20261031-onboard-c3d4","evidence_path":".../onboard/result.json"}
+{"schema":"sure.agent.receipt.v1","invocation_id":"44444444444444444444444444444444","command":"/sure_approve","status":"incomplete","exit_code":1,"run_id":"20261031-approve-e5f6","error":"Human approval is required","evidence_path":".../approve/result.json"}
+{"schema":"sure.agent.receipt.v1","invocation_id":"55555555555555555555555555555555","command":"/sure_infer","status":"success","exit_code":0,"run_id":"20261031-infer-1122","evidence_path":".../infer/result.json","products":["predictions.jsonl","protocol.yaml"]}
+{"schema":"sure.agent.receipt.v1","invocation_id":"66666666666666666666666666666666","command":"/sure_eval","status":"success","exit_code":0,"run_id":"20261031-eval-3344","evidence_path":".../eval/result.json","products":["metrics.json","report.html"]}
+```
+
+For `blocked`, inspect `error` and `next_action`; for `failed`, inspect the
+receipt's `error`, native `run.json`, and evidence artifacts; for `incomplete`,
+preserve `run_id` and call `resume` after satisfying the human checkpoint. Do
+not infer success from fluent stdout or from a fixture test.

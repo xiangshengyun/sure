@@ -30,7 +30,7 @@ sys.path.insert(0, str(REPO_ROOT / "sure" / "runtime" / "harness"))
 sys.path.append(str(ONBOARD_SCRIPTS))
 
 from deployment_binding import DeploymentBindingError, load_deployment_binding
-from deployment_contract import declared_server_protocol
+from deployment_contract import declared_server_protocol, validate_runtime_path_env
 from model_child_env import model_child_env
 from model_wrapper_mcp_server import _tool_names
 from server_protocol import MCP_SERVER_PROTOCOL
@@ -896,25 +896,11 @@ def verify_server_contract(candidate: Path, runtime_kind: str, binding: dict[str
                 f"server.working_dir {working_dir!r} disagrees with approved container working_dir "
                 f"{container.get('working_dir')!r}"
             )
-        for key in ("SURE_MODEL_DIR", "MODEL_DIR"):
-            declared = _declared_server_env(server).get(key)
-            if declared and declared.startswith("/") and declared != model_target:
-                raise ApprovalError(
-                    f"server.env.{key} {declared!r} disagrees with approved model mount {model_target!r}"
-                )
-        # `PYTHONPATH`/`PYTHONHOME` are the other half of the same mistake: a
-        # bundle that imports its own modules from a hardcoded root works on the
-        # host that built it and fails at import time once deployment mounts it
-        # elsewhere. An entry already spelled under the mount passes, and so does
-        # an image-provided one -- only a path that reaches this bundle through
-        # another root is refused.
         declared_env = _declared_server_env(server)
-        for key in ("PYTHONPATH", "PYTHONHOME"):
-            raw = declared_env.get(key, "")
-            entries = raw.split(":") if key == "PYTHONPATH" else [raw]
-            for entry in entries:
-                if entry.startswith("/") and not entry.startswith(model_target + "/") and entry != model_target:
-                    _refuse_renamed_bundle_root(entry, model_target, key)
+        try:
+            validate_runtime_path_env(declared_env, model_target, source="config.yaml server.env")
+        except ValueError as exc:
+            raise ApprovalError(str(exc)) from exc
     try:
         protocol = declared_server_protocol(config, candidate)
     except ValueError as exc:
@@ -1040,7 +1026,8 @@ def _authored_smoke_arguments(
             try:
                 arguments[name] = _container_argument(value, roots, model_target, name)
             except ApprovalError:
-                # A literal prompt is not a bundle path; only paths are rewritten.
+                if Path(value).is_absolute() or "/" in value or "\\" in value:
+                    raise
                 arguments[name] = value
         else:
             arguments[name] = value

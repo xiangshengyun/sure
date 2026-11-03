@@ -391,6 +391,16 @@ def _validate_runtime_path_env(
             raise ValueError(
                 f"{source} MODEL_PATH {settings['MODEL_PATH']!r} disagrees with model_runtime.working_dir {working_dir!r}"
             )
+    declared_pythonhome = settings.get("PYTHONHOME")
+    if declared_pythonhome:
+        normalized_pythonhome = _normalized_container_path(declared_pythonhome, base=path_base)
+        if normalized_pythonhome and "model" in PurePosixPath(normalized_pythonhome).parts:
+            try:
+                PurePosixPath(normalized_pythonhome).relative_to(target)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{source} PYTHONHOME {declared_pythonhome!r} does not use model_runtime.working_dir {working_dir!r}"
+                ) from exc
     declared_pythonpath = settings.get("PYTHONPATH")
     if declared_pythonpath:
         for entry in declared_pythonpath.split(":"):
@@ -406,6 +416,11 @@ def _validate_runtime_path_env(
                 raise ValueError(
                     f"{source} PYTHONPATH entry {entry!r} does not use model_runtime.working_dir {working_dir!r}"
                 ) from exc
+
+
+def validate_runtime_path_env(settings: dict[str, str], working_dir: str, *, source: str) -> None:
+    """Validate model-related absolute environment paths against the bundle root."""
+    _validate_runtime_path_env(settings, working_dir, source=source, path_base=None)
 
 
 def validate_image_runtime_env(env_entries: list[str], working_dir: str) -> None:

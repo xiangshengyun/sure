@@ -76,12 +76,19 @@ class ContainerServerSmokeTests(unittest.TestCase):
 
     def test_rejects_declared_model_dir_outside_mount(self) -> None:
         self.config(model_dir="/model")
-        with self.assertRaisesRegex(approval_core.ApprovalError, "server.env.SURE_MODEL_DIR.*approved model mount"):
+        with self.assertRaisesRegex(approval_core.ApprovalError, "server.env SURE_MODEL_DIR"):
             approval_core.verify_server_contract(self.candidate, "container", self.binding)
+
+    def test_rejects_model_path_and_pythonhome_outside_mount(self) -> None:
+        for key in ("MODEL_PATH", "PYTHONHOME"):
+            with self.subTest(key=key):
+                self.config(extra_env=f"    {key}: /opt/model\n")
+                with self.assertRaisesRegex(approval_core.ApprovalError, key):
+                    approval_core.verify_server_contract(self.candidate, "container", self.binding)
 
     def test_rejects_pythonpath_that_reaches_the_bundle_by_another_root(self) -> None:
         self.config(extra_env="    PYTHONPATH: /model/src\n")
-        with self.assertRaisesRegex(approval_core.ApprovalError, "PYTHONPATH.*root deployment does not mount"):
+        with self.assertRaisesRegex(approval_core.ApprovalError, "PYTHONPATH.*does not use model_runtime"):
             approval_core.verify_server_contract(self.candidate, "container", self.binding)
 
     def test_allows_image_provided_and_mount_spelled_pythonpath(self) -> None:
@@ -179,6 +186,14 @@ class ContainerServerSmokeTests(unittest.TestCase):
             approval_core._verify_container_server(self.candidate, self.binding)
         server_command = json.loads(observed[observed.index("--server-command") + 1])
         self.assertEqual(server_command[0], self.binding["container"]["python_executable"])
+
+    def test_refuses_an_authored_absolute_path_outside_bundle(self) -> None:
+        (self.candidate / "artifacts" / "server_smoke_input.json").write_text(
+            json.dumps({"arguments": {"text": "/outside/input.wav"}}), encoding="utf-8"
+        )
+        self.config()
+        with self.assertRaises(approval_core.ApprovalError):
+            approval_core._verify_container_server(self.candidate, self.binding)
 
     def test_refuses_a_required_input_the_fixture_cannot_supply(self) -> None:
         (self.candidate / "config.yaml").write_text(

@@ -13,11 +13,13 @@ from typing import Any
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sure_onboard" / "scripts"))
 from sure.site.gpu_partition import partition_command
 from sure.site.loader import load_site_policy
 
 from harness_runtime import harness_runtime_from_eval_input
 from deployment_binding import DEPLOYMENT_BINDING_V1, DEPLOYMENT_BINDING_V2
+from deployment_contract import validate_runtime_path_env
 from docker_runtime import resolve_docker_binary
 from evaluation_runtime import evaluation_runtime_from_eval_input
 from execution_provenance import (
@@ -199,9 +201,6 @@ def resolve_container_harness_runtime(
     return {**host_runtime, "execution_source": "active_injected_runtime"}, True
 
 
-MODEL_PATH_ENV_KEYS = ("MODEL_PATH", "MODEL_DIR", "SURE_MODEL_DIR")
-
-
 def _posix_within(path: str, root: str) -> bool:
     candidate = PurePosixPath(posixpath.normpath(path))
     base = PurePosixPath(posixpath.normpath(root))
@@ -249,29 +248,12 @@ def validate_infer_path_contract(model_source: Path, container: dict[str, Any]) 
             )
     server = _bundle_server_config(model_source).get("server")
     env = server.get("env") if isinstance(server, dict) else None
-    if not isinstance(env, dict):
-        return
-    for key, value in env.items():
-        key = str(key)
-        if key not in (*MODEL_PATH_ENV_KEYS, "PYTHONPATH", "PYTHONHOME"):
-            continue
-        if not isinstance(value, str) or not PurePosixPath(value).is_absolute():
-            continue
-        entries = value.split(":") if key == "PYTHONPATH" else [value]
-        for entry in entries:
-            if not PurePosixPath(entry).is_absolute():
-                continue
-            # An image-provided import root has nothing to do with the bundle;
-            # only a path that names a model root is the bundle speaking about
-            # itself from another location.
-            if key in ("PYTHONPATH", "PYTHONHOME") and "model" not in PurePosixPath(entry).parts:
-                continue
-            if _posix_within(entry, target):
-                continue
-            raise ValueError(
-                f"config.yaml server.env.{key} entry {entry!r} is outside the approved model mount "
-                f"{target!r}; the server would read a directory the container never received"
-            )
+    if isinstance(env, dict):
+        validate_runtime_path_env(
+            {str(key): value for key, value in env.items() if isinstance(value, str)},
+            target,
+            source="config.yaml server.env",
+        )
 
 
 def build_local_container_command(

@@ -254,13 +254,16 @@ def build_local_container_command(
     command = [docker_binary, "run", "--rm", "--init", "--entrypoint", harness_python]
     mounted_targets: dict[str, tuple[Path, bool]] = {}
     lowered = (device_request or "auto").lower()
-    workers = int((eval_input.get("runtime") or {}).get("num_workers", 1))
+    runtime = eval_input.get("runtime") or {}
+    workers = int(runtime.get("num_workers", 1))
+    bounded_plan = bool(runtime.get("worker_policy"))
+    planned_cpu = bounded_plan and lowered == "auto" and runtime.get("device", {}).get("resolved") == "cpu"
     if workers > 1 and lowered not in {"auto", "cuda"}:
         raise ValueError("Multi-GPU inference requires device=auto or device=cuda")
-    if lowered != "cpu" and (container.get("gpu_required") is True or workers > 1):
+    if lowered != "cpu" and not planned_cpu and (container.get("gpu_required") is True or workers > 1 or bounded_plan):
         if lowered.startswith("cuda:"):
             command.extend(["--gpus", f"device={lowered.split(':', 1)[1]}"])
-        elif workers > 1:
+        elif workers > 1 or bounded_plan:
             visible = os.environ.get("CUDA_VISIBLE_DEVICES")
             if visible is None:
                 command.extend(["--gpus", str(workers)])
@@ -332,12 +335,14 @@ def build_local_container_command(
         policy_target = container_path(policy_path)
         _mount(command, mounted_targets, policy_path, policy_target, read_only=True)
         env["SURE_SITE_POLICY"] = policy_target
-    if workers > 1:
+    if workers > 1 or (bounded_plan and "--gpus" in command):
         # Docker device ids describe host GPUs; CUDA ordinals inside the
         # restricted container are renumbered. Probe those in the entrypoint.
         env.pop("CUDA_VISIBLE_DEVICES", None)
-        env["DEVICE"] = "cuda"
-        env["SURE_EVAL_DEVICE_ACTUAL"] = "cuda"
+        env["DEVICE"] = "cuda" if workers > 1 else "cuda:0"
+        env["SURE_EVAL_DEVICE_ACTUAL"] = env["DEVICE"]
+    elif planned_cpu:
+        env.update(DEVICE="cpu", SURE_EVAL_DEVICE_ACTUAL="cpu", CUDA_VISIBLE_DEVICES="")
     env.update(
         {
             "MODEL_DIR": model_target,
@@ -389,7 +394,10 @@ def build_local_container_command(
     for key in sorted(env):
         command.extend(["--env", f"{key}={env[key]}"])
     command.extend([str(binding["target_image_ref"]), container_path(entrypoint.resolve())])
-    command, _ = partition_command(command, {**os.environ, **env}, "infer", device=device_request, workers=workers)
+    command, _ = partition_command(
+        command, {**os.environ, **env}, "infer",
+        device="cpu" if planned_cpu else device_request, workers=workers,
+    )
     return command, {
         "image": binding["target_image"],
         "image_digest": binding["target_image_digest"],

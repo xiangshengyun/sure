@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import os
+import posixpath
 import sys
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -202,8 +203,8 @@ MODEL_PATH_ENV_KEYS = ("MODEL_PATH", "MODEL_DIR", "SURE_MODEL_DIR")
 
 
 def _posix_within(path: str, root: str) -> bool:
-    candidate = PurePosixPath(path)
-    base = PurePosixPath(root)
+    candidate = PurePosixPath(posixpath.normpath(path))
+    base = PurePosixPath(posixpath.normpath(root))
     return candidate == base or base in candidate.parents
 
 

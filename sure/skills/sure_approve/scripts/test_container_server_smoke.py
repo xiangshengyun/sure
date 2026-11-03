@@ -133,6 +133,53 @@ class ContainerServerSmokeTests(unittest.TestCase):
         self.assertEqual(evidence["env"]["MODEL_DIR"], "/workspace/model")
         self.assertEqual(evidence["env"]["RUN_DIR"], "/sure-approve-output")
 
+    def test_authored_input_completes_fixture_inputs(self) -> None:
+        (self.candidate / "artifacts" / "server_smoke_input.json").write_text(
+            json.dumps({"arguments": {"text": "hello"}}), encoding="utf-8"
+        )
+        (self.candidate / "config.yaml").write_text(
+            "server:\n  command: [python, server.py]\n  protocol: mcp\n"
+            "  working_dir: /workspace/model\ntools:\n"
+            "  - name: predict\n    input_schema:\n      type: object\n"
+            "      required: [audio_path, text]\n"
+            "      properties:\n        audio_path: {type: string}\n        text: {type: string}\n",
+            encoding="utf-8",
+        )
+        observed: list[str] = []
+
+        def run(command: list[str], **kwargs: object) -> mock.Mock:
+            observed.extend(command)
+            output_mount = next(value for value in command if value.endswith(",dst=/sure-approve-output"))
+            output_dir = Path(output_mount.removeprefix("type=bind,src=").removesuffix(",dst=/sure-approve-output"))
+            (output_dir / "server_contract_smoke.json").write_text(
+                json.dumps({"status": "passed", "steps": {"tools_list": {"ok": True}}}), encoding="utf-8"
+            )
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(approval_core.subprocess, "run", side_effect=run):
+            approval_core._verify_container_server(self.candidate, self.binding)
+        arguments = json.loads(observed[observed.index("--arguments-json") + 1])
+        self.assertEqual(arguments["text"], "hello")
+        self.assertTrue(arguments["audio_path"].startswith("/workspace/model/"))
+
+    def test_server_smoke_uses_approved_python(self) -> None:
+        self.config()
+        observed: list[str] = []
+
+        def run(command: list[str], **kwargs: object) -> mock.Mock:
+            observed.extend(command)
+            output_mount = next(value for value in command if value.endswith(",dst=/sure-approve-output"))
+            output_dir = Path(output_mount.removeprefix("type=bind,src=").removesuffix(",dst=/sure-approve-output"))
+            (output_dir / "server_contract_smoke.json").write_text(
+                json.dumps({"status": "passed", "steps": {"tools_list": {"ok": True}}}), encoding="utf-8"
+            )
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(approval_core.subprocess, "run", side_effect=run):
+            approval_core._verify_container_server(self.candidate, self.binding)
+        server_command = json.loads(observed[observed.index("--server-command") + 1])
+        self.assertEqual(server_command[0], self.binding["container"]["python_executable"])
+
     def test_refuses_a_required_input_the_fixture_cannot_supply(self) -> None:
         (self.candidate / "config.yaml").write_text(
             "server:\n  command: [python, server.py]\n  protocol: mcp\n"

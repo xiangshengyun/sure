@@ -1102,10 +1102,13 @@ def _fixture_arguments(
 
     sample_audio = sample.get("audio_path")
     suffix = Path(sample_audio).suffix if isinstance(sample_audio, str) and sample_audio else ".wav"
-    if not any(supplied(name) for name in [*required, *props]):
-        authored = candidate / "artifacts" / "server_smoke_input.json"
-        if authored.is_file():
-            return _authored_smoke_arguments(authored, required, roots, model_target, output_target, suffix)
+    authored = candidate / "artifacts" / "server_smoke_input.json"
+    authored_arguments: dict[str, Any] = {}
+    if authored.is_file():
+        authored_arguments = _authored_smoke_arguments(
+            authored, [], roots, model_target, output_target, suffix
+        )
+    if not any(supplied(name) for name in [*required, *props]) and not authored_arguments:
         if not required:
             return {}
         fields = ", ".join([*required, *props])
@@ -1122,7 +1125,9 @@ def _fixture_arguments(
     arguments: dict[str, Any] = {}
     missing: list[str] = []
     for name in required:
-        if supplied(name):
+        if name in authored_arguments:
+            arguments[name] = authored_arguments[name]
+        elif supplied(name):
             arguments[name] = _container_argument(supplied(name), roots, model_target, name)
         elif _is_output_argument(name):
             arguments[name] = _smoke_output_path(name, output_target, suffix)
@@ -1216,10 +1221,13 @@ def _verify_container_server(candidate: Path, binding: dict[str, Any]) -> dict[s
         ]
         if container.get("gpu_required") is True:
             command.extend(["--gpus", "all"])
+        server_command = list(container["server_command"])
+        if server_command and Path(server_command[0]).name in {"python", "python3"}:
+            server_command[0] = str(container["python_executable"])
         command.extend([
             str(binding["target_image_ref"]),
             f"{repo_target}/sure/skills/sure_onboard/scripts/run_server_smoke.py",
-            "--server-command", json.dumps(container["server_command"]),
+            "--server-command", json.dumps(server_command),
             "--protocol", str(protocol),
             "--task", task,
             "--tool", contracts[0].name,

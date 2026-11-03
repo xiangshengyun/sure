@@ -833,6 +833,15 @@ class DeploymentBindingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside working_dir"):
             self._container_command(binding)
 
+    def test_infer_preflight_normalizes_parent_hops(self) -> None:
+        self._resealed_inventory(
+            server_command=["python", "/workspace/model/../../elsewhere/server.py"],
+            external_command_paths=[],
+        )
+        binding = load_deployment_binding(self.model, "demo")
+        with self.assertRaisesRegex(ValueError, "outside working_dir"):
+            self._container_command(binding)
+
     def test_infer_preflight_allows_a_declared_external_server_script(self) -> None:
         self._resealed_inventory(
             server_command=["python", "/opt/vendor/server.py"],

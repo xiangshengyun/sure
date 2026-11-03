@@ -74,7 +74,7 @@ Each unit must satisfy: **Inputs** (previous unit's produces + evidence sources 
 
 ## Container Runtime Path Contract
 
-For container-only inference, the approved `container_runtime.working_dir` is the model bundle mount target. `server_command` entries that name absolute model files must remain under that target; image-owned executables may appear only in `external_command_paths`. Absolute `MODEL_PATH`, `MODEL_DIR`, `SURE_MODEL_DIR`, `PYTHONPATH`, and `PYTHONHOME` values are checked against the approved mount. Paths are normalized before containment checks, so `..` cannot escape the mount. Fix the bundle and re-run onboarding/approval rather than overriding these checks.
+For container-only inference, the approved `container_runtime.working_dir` is the model bundle mount target. `server_command` entries that name absolute model files must remain under that target; image-owned executables may appear only in `external_command_paths`. In `config.yaml server.env`, `MODEL_PATH` must sit under that target, `MODEL_DIR` and `SURE_MODEL_DIR` must equal it, and a `PYTHONPATH` or `PYTHONHOME` entry is checked only when it names a model root -- any other absolute path belongs to the image and is left alone. Paths are normalized before the checks, so `..` cannot escape the mount. Fix the bundle and re-run onboarding/approval rather than overriding these checks.
 
 ## System Constraints (red lines — non-negotiable)
 

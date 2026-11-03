@@ -715,30 +715,6 @@ def load_model_config(model_dir: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _refuse_renamed_bundle_root(entry: str, model_target: str, label: str) -> None:
-    """Refuse an env path that reaches this bundle through a root deployment renames.
-
-    A bundle that imports its own code from a hardcoded root works on the host
-    that built it and fails at import time once deployment mounts it elsewhere --
-    the same defect as a hardcoded `SURE_MODEL_DIR`, one level down. Image
-    entries (`/usr/local/lib/...`, `/opt/...`) are legitimate, so only a second
-    spelling of the mount's own last segment (`/model` beside `/workspace/model`)
-    is refused.
-
-    ponytail: matched on the first segment only. A renamed root spelled deeper
-    goes through here; the container smoke is what catches that.
-    """
-    root = PurePosixPath(model_target)
-    parts = PurePosixPath(entry).parts
-    if len(parts) < 2 or parts[1] != root.name:
-        return
-    spelled = root if len(parts) == 2 else root.joinpath(*parts[2:])
-    raise ApprovalError(
-        f"server.env.{label} entry {entry!r} names the model bundle by a root deployment does "
-        f"not mount; the bundle is mounted at {model_target!r}, so write it as {str(spelled)!r}"
-    )
-
-
 def _redacted_env(env: dict[str, Any]) -> dict[str, str]:
     """An env snapshot safe to write into approval evidence.
 

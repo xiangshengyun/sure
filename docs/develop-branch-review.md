@@ -1,41 +1,66 @@
 # develop 分支对比与完备性分析（2026-11-03）
 
-对比 `develop`（`31ef1150`）与 `main`（`cf8d389e`, tag `m-0.0.6`），审查 develop
+对比 `develop`（`a495f657`）与 `main`（`cf8d389e`, tag `m-0.0.6`），审查 develop
 相对 main 的增量改动是否完备。
 
 ## 结论摘要
 
-截至提交 `31ef1150`，develop 相对 main 的**净改动为 19 个文件 / +1699 −22，全部在 `sure/skills/`**，实质内容
+截至提交 `a495f657`，develop 相对 main 的**净改动为 20 个代码文件 / +1703 −23，全部在 `sure/skills/`**
+（另有本文档 1 个文件），实质内容
 是一件事：**给容器交付补上"路径契约"** —— 模型包在镜像里被挂到哪个绝对路径，Dockerfile、
 镜像实际 ENV、`config.yaml server.env` 三处必须一致。
 
-方向正确、实现质量高、测试充分（新增 55 个用例全通过，`npm run check` 12/12 绿），但
+方向正确、实现质量高，但初始实现存在跨阶段契约不一致；后续复核又发现模块导入遮蔽问题。改动应按必要性分层，不能把所有防御性增强都视为核心缺陷。
 **修复前不完备**：同一套契约存在三份独立实现、口径互不一致，实测能构造出
 "onboard 通过 + approval 通过 + infer 拒绝"的组合 —— 也就是它自己声称要消灭的那类
 "跑完全程才发现"的失败。
 
-**复核结论（修复后的工作区，2026-11-03）**：🔴 三份实现已收敛成
+**复核结论（2026-11-03）**：🔴 三份实现已收敛成
 `deployment_contract.validate_runtime_path_env` 一处，approve / infer 的判定与错误文本
-**逐条一致**（实测 15 组声明全部同进同退）。但本轮改动引入了一个**新的回归**：
-`container_execution.py:16` 在模块导入期把 `sure_onboard/scripts` 插到 `sys.path` 最前，
-遮蔽了 infer 侧同名的 `docker_runtime`，导致推理侧**静默忽略 `SURE_EVAL_DOCKER_BIN`**
-（改用 `SURE_ONBOARD_DOCKER_BIN`），并新增 5 个测试失败。详见 §三·复核新增。
+逐条一致。复核发现的 `sys.path` 模块遮蔽问题已修复：infer 现在使用命名空间导入 onboard 的契约模块，
+不会覆盖 infer 自己的 `docker_runtime`。`_refuse_renamed_bundle_root` 死代码也已删除。详见 §三·复核新增。
 
-**本文档的边界**：这一轮是**复核**——代码一行没改（工作区里那 5 个改动文件是上一轮
-修复留下的，未提交）。新发现的问题只做记录，修法写进 §三·复核新增与 §六·建议动作，
-是否实施由维护者决定。
+**本文档的边界**：上一版复核只记录问题；本次已实施 §三·复核新增中的导入遮蔽修复和死代码清理，
+并补充了存量 inventory 迁移说明。
+
+## 改动必要性分层
+
+并非近期所有改动都是同等级的“刚需”。应区分核心逻辑修复、交付质量增强和可能过度收紧的兼容性规则：
+
+### 必须保留的核心修复
+
+- 审批冒烟与实际推理使用同一个批准的 Model Python 解释器；否则可能出现 approval 通过、infer 失败。
+- `server_smoke_input.json` 与 fixture 参数合并；否则多输入模型或非音频输入模型会被错误拒绝。
+- onboard、approval、infer 统一校验 `MODEL_PATH`、`MODEL_DIR`、`SURE_MODEL_DIR`、`PYTHONPATH`、`PYTHONHOME`；否则会出现前一闸门通过、后一闸门拒绝。
+- 对容器路径先做 `normpath` 再判断 containment，避免 `..` 绕过挂载边界。
+- 使用命名空间导入避免 `sys.path` 遮蔽 infer 侧 `docker_runtime`；否则 `SURE_EVAL_DOCKER_BIN` 可能被静默忽略。
+
+### 合理的交付质量增强
+
+- 容器 approval 阶段真实调用一次工具，而不是只执行 `tools/list`，用于发现“能启动但首次推理失败”的镜像。
+- 对 digest-pinned 镜像的实际 `WORKDIR`、ENV、ENTRYPOINT 做校验，避免只相信 Dockerfile 文本。
+- `external_command_paths` 作为镜像自带解释器/脚本的显式 allowlist；该 allowlist 不能用于放行模型包越界路径。
+
+这些增强提高交付门禁质量，但不应与核心业务修复混为一谈。
+
+### 需要谨慎控制的收紧规则
+
+- `MODEL_DIR`/`SURE_MODEL_DIR` 强制等于 model mount root 是兼容性收紧，不是所有模型场景下的绝对事实；当前按“模型根目录”语义处理，并要求存量 bundle 重新 onboard。`MODEL_PATH` 仍可指向挂载根下的权重子目录。
+- authored smoke input 不应仅因为字符串包含 `/` 或 `\` 就判为路径并拒绝；应优先识别绝对路径、bundle 内相对路径和确实越界的路径，普通业务字符串、URL 或语言/说话人标识不能被误拒。
+
+后续修改应优先保证核心修复，再评估兼容性收紧，避免为低概率问题扩大拒绝范围。
 
 ## 一、分支拓扑：真实差异比 commit 数小得多
 
 | 关系 | 结果 |
 | --- | --- |
 | `main` 是否 `develop` 的祖先 | 是（`git rev-list --count develop..main` = 0，合并是 fast-forward） |
-| `develop` 领先 `main` | 32 个 commit |
-| `develop` 领先 `upstream/harness-tui-agent` | 59 个 commit |
-| **净树差异** | **19 文件 / +1699 / −22** |
+| `develop` 领先 `main` | 33 个 commit（其中 7 个是 merge） |
+| `develop` 领先 `upstream/harness-tui-agent` | 60 个 commit |
+| **净树差异** | **21 文件 / +2115 / −23**（代码 20 文件 / +1703 / −23，另有本文档 1 个） |
 
-32 个 commit 里只有 7 个真正产生内容差异，即 `fix/container-runtime-contract-20261027`
-那条线加收尾提交：
+33 个 commit 里只有 8 个真正产生内容差异，即 `fix/container-runtime-contract-20261027`
+那条线加两轮收尾提交：
 
 ```
 a4c06a8a fix(agent): enforce container runtime paths and smoke the approved server
@@ -45,6 +70,7 @@ b00a0456 fix(agent): start approval container smokes with --entrypoint
 29e4824a fix(agent): verify the image's own WORKDIR and ENV, and partition the server smoke
 ac6dfe6e fix(agent): drive the approved tool and preflight infer paths
 31ef1150 fix(agent): align container approval and inference contracts
+a495f657 fix(agent): align shared container path validation
 ```
 
 其余 18 个（RIR 集成、TTA 集成、SURE skill bridge、engine bump、Worker device 归一化等）在
@@ -52,7 +78,7 @@ main 上已经通过 `upstream/harness-tui-agent` 有了同内容副本；两次
 `Merge branch 'main' into develop`（`81360eb5`、`c41d21ba`）之后它们在树上变成空操作。
 
 `git cherry main develop` 仍把这 18 个标成 `+`（基线不同导致 patch-id 不匹配），所以
-`git log main..develop` 会显示 32 行噪音，其中 18 行是重复内容。
+`git log main..develop` 会显示 33 行噪音，其中 18 行是重复内容。
 
 **历史整理建议不作为合并前置条件：main 已是 develop 的祖先，最终树差异没有重复代码。是否整理重复语义 commit 属于团队历史策略，不影响功能合并。
 
@@ -62,10 +88,10 @@ main 上已经通过 `upstream/harness-tui-agent` 有了同内容副本；两次
 
 - `sure/skills/sure_onboard/schemas/docker_validation.schema.json`
   `model_runtime` 新增必填 `working_dir` + `server_command`，新增可选 `external_command_paths`。
-- `sure/skills/sure_onboard/scripts/deployment_contract.py:432`
+- `sure/skills/sure_onboard/scripts/deployment_contract.py:447`
   新增 `validate_container_runtime_contract()`：解析 Dockerfile 的 `FROM/WORKDIR/ENV`，
   只认最后构建阶段，支持具名 stage 继承、相对 WORKDIR 解析、`${VAR}` 延迟到运行时。
-- `sure/skills/sure_onboard/scripts/deployment_contract.py:411`
+- `sure/skills/sure_onboard/scripts/deployment_contract.py:426`
   新增 `validate_image_runtime_env()`：对 `docker image inspect` 拿到的真实 `Config.Env`
   再跑一遍同规则（ENV 可能来自基础镜像或 ARG 展开，Dockerfile 文本里看不到）。
 - `sure/skills/sure_onboard/scripts/check_container_package.py`
@@ -83,9 +109,10 @@ main 上已经通过 `upstream/harness-tui-agent` 有了同内容副本；两次
 
 ### approve（`sure/skills/sure_approve/scripts/approval_core.py`，+467）
 
-- `verify_server_contract` 新增容器分支（`:889`）：`server.working_dir` vs 已批准的
-  `working_dir`；`SURE_MODEL_DIR`/`MODEL_DIR` vs 模型挂载点（`:899`）；
-  `PYTHONPATH`/`PYTHONHOME` 的"改根目录"检测（`:912`）。
+- `verify_server_contract` 新增容器分支（`:828`）：`server.working_dir` vs 已批准的
+  `working_dir`（`:872`）；`server.env` 的路径契约现统一交给共享函数
+  `validate_runtime_path_env`（`:877`），覆盖 `MODEL_PATH`/`MODEL_DIR`/
+  `SURE_MODEL_DIR`/`PYTHONPATH`/`PYTHONHOME`。
 - 新增 `_verify_container_server()`：在 digest-pinned 镜像里真起一次 MCP/JSONL server，
   **真的调一次工具**，用 `run_server_smoke.py` 判定，不退化到 `--list-only`。
 - `--entrypoint` 修掉镜像自带 ENTRYPOINT 被叠加成 `python3 python3 validate.py`。
@@ -97,9 +124,10 @@ main 上已经通过 `upstream/harness-tui-agent` 有了同内容副本；两次
 
 - `sure/skills/sure_infer/scripts/deployment_binding.py`
   `external_command_paths` 缺省即"旧 inventory"，不判；存在才判。
-- `sure/skills/sure_infer/scripts/container_execution.py:222`
+- `sure/skills/sure_infer/scripts/container_execution.py:220`
   新增 `validate_infer_path_contract()`：推理前置校验 `server_command` 与
-  `config.yaml server.env` 的路径。
+  `config.yaml server.env` 的路径；`server.env` 部分同样调用共享函数
+  `validate_runtime_path_env`（`:251`）。
 
 ### 文档
 
@@ -111,7 +139,7 @@ main 上已经通过 `upstream/harness-tui-agent` 有了同内容副本；两次
 ### 🔴 高：三份契约实现，口径互不一致 —— 已修复
 
 `deployment_contract.py:367` `_validate_runtime_path_env`（onboard）、
-`approval_core.py:899/912`（approve）、`container_execution.py:222`（infer）此前是同一套规则的
+`approval_core.py:877`（approve）、`container_execution.py:220`（infer）此前是同一套规则的
 三份独立代码；本次修复已抽出共享校验函数 `validate_runtime_path_env`，三个闸门统一调用。
 
 修复前实测三个闸门对同一份 `config.yaml server.env` 的反应：
@@ -127,7 +155,7 @@ main 上已经通过 `upstream/harness-tui-agent` 有了同内容副本；两次
 
 后果：
 
-1. **`approval_core.py:899` 的 key 列表少了 `MODEL_PATH`** —— onboard 和 infer 都拒。
+1. **`approval_core.py` 容器分支的 key 列表少了 `MODEL_PATH`** —— onboard 和 infer 都拒。
 2. `PYTHONHOME` 曾由 onboard 漏检。
 3. `PYTHONPATH` 三处判定顺序与错误文本各不相同。
 
@@ -154,7 +182,7 @@ onboard 走的是镜像 ENV 通道（`validate_image_runtime_env`），判定规
 
 ### 🟠 中：infer 侧的新前置校验没有任何文档 —— 已补
 
-`container_execution.py:222` 会因为 `config.yaml server.env` 里的绝对路径直接拒绝一次推理。
+`container_execution.py:220` 会因为 `config.yaml server.env` 里的绝对路径直接拒绝一次推理。
 修复前 `sure_infer/SKILL.md` 对
 `MODEL_PATH|working_dir|model_mount|external_command_paths|PYTHONPATH` **零命中**。
 现已补 `## Container Runtime Path Contract` 一节，写明挂载点是唯一模型根、
@@ -188,13 +216,13 @@ approved container mount"而不是"这个路径不在 bundle 内"。
 - `verify_live_image` 现在总比 WORKDIR，基镜像没设 WORKDIR 时 `Config.WorkingDir` 是 `""`，
   `normpath("")` = `"."`，报错文案会是 `WORKDIR '' disagrees with ...`，不如写成
   "镜像未声明 WORKDIR"。
-- `container_execution.py:230` 的注释"`working_dir` is not required to equal the target
+- `container_execution.py:228` 的注释"`working_dir` is not required to equal the target
   (sure_trans mounts the model elsewhere)"已过时：`write_runtime_inventory.py` 现在强制两者
   相等。trans 走自己的 writer，不受影响，但注释会误导。
 
 ## 三·复核新增（本轮修复引入 / 遗留）
 
-### 🔴 高：`container_execution.py:16` 遮蔽 infer 侧的同名模块
+### 🔴 高：`container_execution.py`（原 `:16`）遮蔽 infer 侧的同名模块（已修复）
 
 ```python
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sure_onboard" / "scripts"))
@@ -214,61 +242,58 @@ has DOCKER_BIN_ENV(SURE_EVAL_DOCKER_BIN): False
 has ONBOARD_DOCKER_BIN_ENV: True
 ```
 
-**生产影响**：`container_execution.py:23` 和 `check_execution_surface_compliance.py:36`
-的 `from docker_runtime import resolve_docker_binary` 拿到的是 onboard 版本，于是
-推理侧的 Docker 路径覆盖变量 **`SURE_EVAL_DOCKER_BIN` 被静默忽略**，改认
+**生产影响**：`container_execution.py` 的 `from docker_runtime import resolve_docker_binary`
+（现 `:22`）和 `check_execution_surface_compliance.py:36` 的同名 import 拿到的是 onboard
+版本，于是推理侧的 Docker 路径覆盖变量 **`SURE_EVAL_DOCKER_BIN` 被静默忽略**，改认
 `SURE_ONBOARD_DOCKER_BIN`。两个模块只差一个环境变量名，所以不会有报错——正因如此更危险。
 
 **测试影响**：`sure_infer` 新增 5 个失败（`test_docker_runtime` 全红，报
 `module 'docker_runtime' has no attribute 'DOCKER_BIN_ENV'`）。
 
-**仓库里已有的正确写法**：`deployment_contract.py:167` 的 `_server_protocol_module()`
+**仓库里已有的正确写法**：`deployment_contract.py:166` 的 `_server_protocol_module()`
 在函数内**惰性**插入路径，docstring 明说"the path insert happens per call, so it
 cannot shadow a same-named module elsewhere on the path for the whole process"。
 本轮修复恰好复制了它警告的那种写法。
 
-两条修法，二选一：
+修复方案：已采用命名空间包导入，不再修改 `sys.path`：
 
 ```python
-# A. 惰性插入，抄仓库里已有的 _server_protocol_module()
-def _onboard_contract():
-    scripts = Path(__file__).resolve().parents[2] / "sure_onboard" / "scripts"
-    if str(scripts) not in sys.path:
-        sys.path.append(scripts)
-    import deployment_contract
-    return deployment_contract
-
-# B. 命名空间包导入，完全不碰 sys.path（repo root 已在 parents[4] 上）
 from sure.skills.sure_onboard.scripts.deployment_contract import validate_runtime_path_env
 ```
 
-B 更干净：`deployment_contract.py` 只依赖标准库，实测 `import` 成功。
-`approval_core.py:30` 的 `sys.path.append(str(ONBOARD_SCRIPTS))` 是安全的 ——
+该修复保留 infer 侧 `docker_runtime` 的正常解析；`test_docker_runtime.py` 的 5 个新增错误已消失。
+
+命名空间包导入可行是因为 `deployment_contract.py` 只依赖标准库，且
+`sure/`、`sure/skills/`、`sure/skills/sure_onboard/`、`.../scripts/` 都没有
+`__init__.py`，PEP 420 命名空间包让 `sure.skills.sure_onboard.scripts.deployment_contract`
+可以直接 import（repo root 已在 `container_execution.py:15` 的 `sys.path` 上）。
+`approval_core.py:30` 的 `sys.path.append(str(ONBOARD_SCRIPTS))` 保持原样是安全的 ——
 approve 与 onboard 两个目录**没有**同名模块。
 
-### 🟡 低：`_refuse_renamed_bundle_root` 成了死代码
+### 🟡 低：`_refuse_renamed_bundle_root` 成了死代码（已修复）
 
-`approval_core.py:718` 定义、**零调用点**（全仓 grep 只命中定义本身）。
+`approval_core.py`（原 `:718`）定义、**零调用点**（全仓 grep 只命中定义本身）。
 它原来守的"改名根"规则已被共享函数的包含判定覆盖（`/model` 不在 `/workspace/model`
-之下 → 拒），消息文案换了但拦截没丢。按"删除优于新增"应当删掉。
+之下 → 拒），消息文案换了但拦截没丢。按“删除优于新增”已删除。
 
-### 🟡 低：infer 侧 `MODEL_DIR`/`SURE_MODEL_DIR` 由"包含"收紧为"相等"
+### 🟡 低：infer 侧 `MODEL_DIR`/`SURE_MODEL_DIR` 由“包含”收紧为“相等”（已补迁移说明）
 
 旧 infer 用 `_posix_within`（包含），共享函数用相等（`!= working_dir` 即拒）。
 `/workspace/model/sub` 这类声明现在会被拒。这与 approve 侧旧行为一致（approve 一直
 是相等），所以是**有意对齐**，不是 bug；但存量 bundle 若声明了子目录会在推理时新被拒，
-需要一条迁移说明。
+已在 `sure/skills/sure_onboard/SKILL.md` 增加存量 inventory 重新 onboard 的迁移说明。
 
 ## 四、修复后验证结果
 
-复核跑在**当前工作区**（含本轮未提交改动），`TEMP` 指向长路径以避开 8.3 短路径噪声：
+复核跑在**当前工作区**（遮蔽修复已应用、未提交），`TEMP` 指向长路径以避开 8.3 短路径噪声：
 
 | 检查 | 结果 |
 | --- | --- |
-| `npm run check` | **12/12 通过** |
+| `npm run check` | **12/12 通过**（连续两次复核均为 12/12；此前记录的 10/12 未复现） |
 | `sure_approve` 全量 | **78 tests OK**（较上一轮 +2，即新增的两个用例） |
-| `sure_infer` 全量 | 777 tests，**6 errors** = 5（本轮**新引入**的 `docker_runtime` 遮蔽）+ 1（存量） |
+| `sure_infer` 全量 | 777 tests，**1 error** = 存量 CRLF 用例；遮蔽引入的 5 个已消失 |
 | `sure_onboard` 全量 | 183 tests，1 失败（存量） |
+| 遮蔽复检 | `docker_runtime` → `sure_infer/scripts/docker_runtime.py`，`SURE_EVAL_DOCKER_BIN` **在位** |
 | 三闸门一致性实测 | 15 组声明 × 3 闸门，approve/infer **逐条一致** |
 
 存量失败（**在 `main` 上完全相同**）：
@@ -283,8 +308,8 @@ approve 与 onboard 两个目录**没有**同名模块。
 另外注意：Windows 上 `TEMP` 指向 8.3 短路径（`SHENGY~1.XIA`）时，会额外炸 7 个与路径拼写
 相关的用例；把 `TEMP` 指到长路径后全绿。**这 7 个也是 main 上同样失败的**，不是本分支引入的。
 
-结论：**分支本身**没有引入新的测试失败，CI 全绿；**本轮修复**引入的 5 个失败来自
-`container_execution.py` 的 `sys.path` 遮蔽（见 §三·复核新增），修掉即可。
+结论：`sys.path` 遮蔽已修复且有测试佐证，核心契约修复是必要的；剩余失败均为存量环境问题，
+需与业务缺陷分开处理。
 
 ## 五、复现契约分歧（修复后仍可跑，且能看出遮蔽）
 
@@ -352,25 +377,34 @@ has SURE_EVAL_DOCKER_BIN: False
 
 ## 六、建议动作
 
-以下全部**尚未实施**——本轮只做复核与记录，没有改动任何代码。
+**已完成**（本轮已实施并复核通过）：
 
-1. **修 `container_execution.py:16` 的 `sys.path` 遮蔽**（本轮新引入，最高优先级）。
-   抄 `deployment_contract.py:167` 的惰性插入写法，或改用命名空间包导入（两条修法见
-   §三·复核新增）。
-2. 删掉 `approval_core.py:718` 的 `_refuse_renamed_bundle_root`（死代码，规则已被共享函数覆盖）。
-3. `sure_onboard/SKILL.md` 补一句存量 inventory 需重新 onboard
+1. ✅ 修 `container_execution.py` 的 `sys.path` 遮蔽 —— 改用命名空间包导入，
+   `sys.path` 不再被污染；`docker_runtime` 恢复正常解析。
+2. ✅ 删掉 `_refuse_renamed_bundle_root`（死代码，规则已被共享函数覆盖）。
+3. ✅ `sure_onboard/SKILL.md` 补存量 inventory 迁移说明
    （`write_runtime_inventory.py` 换成真实 `working_dir` 后，存量的
    `container_runtime.working_dir` 还是旧的 `/workspace/model` 兜底值，
-   新的 `check_runtime_inventory.py` 要求它等于 `model_bundle.target`，存量的会挂）。
-4. `env_docker.md` 第 4 步补"`docker run` 必须显式 `--entrypoint <interpreter>`"。
-5. `write_runtime_inventory.py` 调 `validate_container_runtime_contract` 前确认 Dockerfile 存在。
-6. `verify_live_image` 的 WORKDIR 空值文案改成"镜像未声明 WORKDIR"。
-7. `sure_infer/SKILL.md` 的新一节把 `PYTHONPATH`/`PYTHONHOME` 的判定写准：
-   只有路径含 `model` 段时才检查。
+   新的 `check_runtime_inventory.py` 要求它等于 `model_bundle.target`，存量的会挂；
+   同时提示 `MODEL_DIR`/`SURE_MODEL_DIR` 必须是 `working_dir` 本身而非子目录）。
+
+**仍待处理**：
+
+4. `env_docker.md` 的 `--entrypoint` 说明仍可作为后续文档增强项 —— onboard 自己的容器校验
+   （`run_validate.py` 的 `rewrite_container_env`）只保留 agent 写的 `--entrypoint`，不会补。
+5. `write_runtime_inventory.py` 调 `validate_container_runtime_contract` 前确认 Dockerfile 存在
+   （`check_container_package.py:160` 有这个检查，这里缺），缺文件时抛的是未包装的
+   `FileNotFoundError`。
+6. `verify_live_image` 的 WORKDIR 空值文案改成"镜像未声明 WORKDIR"
+   （基镜像没设 WORKDIR 时 `Config.WorkingDir` 是 `""`，现在报
+   `WORKDIR '' disagrees with ...`）。
+7. `sure_infer/SKILL.md` 的新一节把判定写准：`PYTHONPATH`/`PYTHONHOME` **只有路径含
+   `model` 段时才检查**，`MODEL_DIR`/`SURE_MODEL_DIR` 要**等于**挂载点而不只是在其下。
 8. `approval_core.py` 的 `_authored_smoke_arguments` 兜底判定可再收窄到"绝对路径"，
    免得含 `/` 的字面量提示词被误拒；或补一条含斜杠字面量的用例。
 9. 补一条跨阶段契约测试：同一份 `config.yaml server.env` 喂给 onboard / approve / infer
    三个闸门，断言三者的判定与错误文本一致 —— 这正是本分支想消灭的那类漂移。
+   共享函数目前只被三个闸门各自间接覆盖，没有直接的一致性断言。
 10. 如需整理历史，可单独规划 rebase；不作为功能合并前置条件。
 
 ## 七、值得保留的实现
@@ -388,7 +422,7 @@ review 时不要改掉这几处：
 - `runtime_verification.schema.json` 是 `additionalProperties: true`，新增
   `server_smoke`/`image_config` 不需要改 schema。
 - `external_command_paths` 的"缺省 = 旧 inventory 不判"保证存量 bundle 不被卡死。
-- `deployment_contract.py:167` 的**惰性**路径插入：函数内插路径，只影响调用那一刻，
+- `deployment_contract.py:166` 的**惰性**路径插入：函数内插路径，只影响调用那一刻，
   不会像模块级 `sys.path.insert(0, ...)` 那样整程遮蔽同名模块。跨 skill 目录引用代码时
   应该照这个写法，别照 `approval_core.py:30` 的 `append`（那是安全的，因为它没有同名模块）。
 
@@ -400,13 +434,13 @@ review 时不要改掉这几处：
 | `sure/skills/sure_onboard/scripts/deployment_contract.py:421` | `validate_runtime_path_env`（公共入口） |
 | `sure/skills/sure_onboard/scripts/deployment_contract.py:426` | `validate_image_runtime_env` |
 | `sure/skills/sure_onboard/scripts/deployment_contract.py:447` | `validate_container_runtime_contract` |
-| `sure/skills/sure_onboard/scripts/deployment_contract.py:167` | `_server_protocol_module`（惰性插入路径的正确范例） |
-| `sure/skills/sure_approve/scripts/approval_core.py:901` | 容器分支调用共享 env 校验 |
-| `sure/skills/sure_approve/scripts/approval_core.py:718` | `_refuse_renamed_bundle_root`（**死代码**） |
-| `sure/skills/sure_approve/scripts/approval_core.py:1146` | `_verify_container_server` |
-| `sure/skills/sure_approve/scripts/approval_core.py:1202/1424` | `--entrypoint` |
-| `sure/skills/sure_infer/scripts/container_execution.py:221` | `validate_infer_path_contract` |
-| `sure/skills/sure_infer/scripts/container_execution.py:252` | infer 路径契约调用共享 env 校验 |
-| `sure/skills/sure_infer/scripts/container_execution.py:16` | **sys.path 遮蔽点** |
-| `sure/skills/sure_onboard/scripts/check_runtime_inventory.py:85` | `working_dir == model_bundle.target` |
+| `sure/skills/sure_onboard/scripts/deployment_contract.py:166` | `_server_protocol_module`（惰性插入路径的正确范例） |
+| `sure/skills/sure_approve/scripts/approval_core.py:877` | 容器分支调用共享 env 校验 |
+| `sure/skills/sure_approve/scripts/approval_core.py:718` | `_redacted_env`（原 `_refuse_renamed_bundle_root` 位置，死代码已删） |
+| `sure/skills/sure_approve/scripts/approval_core.py:1122` | `_verify_container_server` |
+| `sure/skills/sure_approve/scripts/approval_core.py:1178/1400` | `--entrypoint` |
+| `sure/skills/sure_infer/scripts/container_execution.py:220` | `validate_infer_path_contract` |
+| `sure/skills/sure_infer/scripts/container_execution.py:251` | infer 路径契约调用共享 env 校验 |
+| `sure/skills/sure_infer/scripts/container_execution.py:21` | 命名空间包导入（遮蔽点的替代写法） |
+| `sure/skills/sure_onboard/scripts/check_runtime_inventory.py:86` | `working_dir == model_bundle.target` |
 | `sure/skills/sure_onboard/scripts/write_runtime_inventory.py:229` | `runtime = validated_model_runtime` |

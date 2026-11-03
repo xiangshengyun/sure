@@ -228,6 +228,8 @@ def build_inventory(model_dir: Path, run_dir: Path) -> dict[str, Any]:
         validated_model_runtime, validated_harness_runtime = validate_runtime_roles(validation)
         runtime = validated_model_runtime
         dockerfile = model_dir / str(build.get("dockerfile_path") or "Dockerfile")
+        if not dockerfile.is_file():
+            raise ValueError(f"the container runtime contract needs the Dockerfile it validates: {dockerfile}")
         validate_container_runtime_contract(dockerfile, runtime)
         model_runtime = {
             "required": True,

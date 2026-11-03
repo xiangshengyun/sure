@@ -59,7 +59,12 @@ def verify_live_image(docker_bin: str, image_ref: str, expected_working_dir: str
             actual_working_dir = json.loads(workdir_probe.stdout)
         except json.JSONDecodeError as exc:
             raise ValueError("docker image inspect did not return Config.WorkingDir JSON") from exc
-        if not isinstance(actual_working_dir, str) or posixpath.normpath(actual_working_dir) != posixpath.normpath(expected_working_dir):
+        if not isinstance(actual_working_dir, str) or not actual_working_dir.strip():
+            raise ValueError(
+                "digest-pinned image declares no WORKDIR; model_runtime.working_dir "
+                f"{expected_working_dir!r} needs the image or its base image to declare it"
+            )
+        if posixpath.normpath(actual_working_dir) != posixpath.normpath(expected_working_dir):
             raise ValueError(f"digest-pinned image WORKDIR {actual_working_dir!r} disagrees with model_runtime.working_dir {expected_working_dir!r}")
         env_probe = subprocess.run(
             [docker_bin, "image", "inspect", image_ref, "--format", "{{json .Config.Env}}"],

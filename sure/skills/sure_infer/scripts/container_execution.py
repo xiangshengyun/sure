@@ -13,13 +13,12 @@ from typing import Any
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sure_onboard" / "scripts"))
 from sure.site.gpu_partition import partition_command
 from sure.site.loader import load_site_policy
 
 from harness_runtime import harness_runtime_from_eval_input
 from deployment_binding import DEPLOYMENT_BINDING_V1, DEPLOYMENT_BINDING_V2
-from deployment_contract import validate_runtime_path_env
+from sure.skills.sure_onboard.scripts.deployment_contract import validate_runtime_path_env
 from docker_runtime import resolve_docker_binary
 from evaluation_runtime import evaluation_runtime_from_eval_input
 from execution_provenance import (

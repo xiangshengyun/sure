@@ -7,7 +7,7 @@ Every local `/sure_onboard` success is a registry-backed, digest-pinned containe
 1. Write a model-specific Dockerfile and record its relative path and SHA-256.
 2. Run `"$HARNESS_PYTHON_BIN" scripts/describe_harness_runtime.py`, add its exact `COPY --from=sure_harness_runtime` instruction to the Dockerfile, and pass its exact `--build-context` option to Docker. That option always names a digest-pinned Harness Runtime image; if the helper reports it has none, build one with `sure/runtime/harness/build_image.py` and export `SURE_HARNESS_RUNTIME_IMAGE=<repository>@sha256:<digest>` first.
 3. Build one explicit target image tag.
-4. Run Model Runtime import, load, inference, contract, and bounded-fixture checks inside that image.
+4. Run Model Runtime import, load, inference, contract, and bounded-fixture checks inside that image. Start every `docker run` with an explicit `--entrypoint <interpreter>`: an image that carries its own ENTRYPOINT would otherwise run `<entrypoint> <your command>` (for example `python3 python3 validate.py`), which fails in a way that reads like a model defect rather than a command-line mistake.
 5. Run Harness Runtime imports, dataset preparation, server orchestration, prediction, and prediction-validation checks through the image binding returned by the helper.
 6. Record the sample output SHA-256 used by container validation.
 7. Push that exact tag to the configured registry.

@@ -20,6 +20,7 @@ from deployment_contract import (
     document_timestamp,
     resolve_model_dir,
     validate_container_runtime_contract,
+    validate_runtime_path_env,
     validate_runtime_roles,
 )
 from finalize_model_bundle import (
@@ -305,6 +306,36 @@ class DockerDeliveryContractTests(unittest.TestCase):
         runtime["server_command"] = ["python", "/workspace/model/server.py"]
         with self.assertRaisesRegex(ValueError, "SURE_MODEL_DIR.*model_runtime.working_dir"):
             validate_container_runtime_contract(dockerfile, runtime)
+
+    def test_the_shared_runtime_path_rule_is_one_rule_for_every_gate(self) -> None:
+        """The contract approve and infer both call, checked directly.
+
+        Both gates call this function, so a rule that drifts here drifts
+        between the gates -- the failure the shared function exists to prevent.
+        """
+        target = "/workspace/model"
+        source = "config.yaml server.env"
+        for env in (
+            {"MODEL_PATH": "/workspace/model/checkpoints"},
+            {"MODEL_DIR": target},
+            {"SURE_MODEL_DIR": target},
+            {"PYTHONPATH": "/usr/lib/python:/workspace/model"},
+            {"PYTHONHOME": "/usr/lib/python"},
+            {"MODEL_PATH": "${MODEL_ROOT}"},
+        ):
+            with self.subTest(env=env):
+                validate_runtime_path_env(env, target, source=source)
+        for env, key in (
+            ({"MODEL_PATH": "/opt/model/w"}, "MODEL_PATH"),
+            ({"MODEL_PATH": "/workspace/model/../elsewhere"}, "MODEL_PATH"),
+            ({"MODEL_DIR": "/workspace/model/sub"}, "MODEL_DIR"),
+            ({"SURE_MODEL_DIR": "/opt/model"}, "SURE_MODEL_DIR"),
+            ({"PYTHONPATH": "/opt/source:/model"}, "PYTHONPATH"),
+            ({"PYTHONHOME": "/model"}, "PYTHONHOME"),
+        ):
+            with self.subTest(env=env):
+                with self.assertRaisesRegex(ValueError, key):
+                    validate_runtime_path_env(env, target, source=source)
 
     def test_dockerfile_pythonpath_must_match_model_runtime(self) -> None:
         dockerfile = self.model_dir / "Dockerfile"

@@ -76,6 +76,10 @@ The helper reads explicit `package`/`package_profile`, `device`, `force_repair`,
 
 `MODEL_INPUT` should be strict YAML. The helper includes a scalar-only fallback for legacy handoffs with unquoted multiline code snippets, but fallback output is partial and must be treated as a repair signal for `/sure_feed`, not as the preferred format.
 
+### Existing Container Inventory Migration
+
+Container inventories created before the explicit runtime-path contract must be re-onboarded before reapproval. In particular, `container_runtime.working_dir` and `mount_policy.model_bundle.target` must match the validated model runtime, and `MODEL_DIR`/`SURE_MODEL_DIR` values must equal that working directory rather than a nested subdirectory.
+
 ### Command Boundaries
 
 There are two command families and they must not be mixed:

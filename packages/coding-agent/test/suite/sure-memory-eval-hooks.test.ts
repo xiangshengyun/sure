@@ -143,6 +143,7 @@ const COPIED_SCRIPTS = [
 	"check_memory_extraction.py",
 	"publish_memory.py",
 	"check_execution_result.py",
+	"check_worker_schedule.py",
 	"dataset_identity.py",
 	"check_execution_surface_compliance.py",
 	"host_env_profile.py",
@@ -240,6 +241,10 @@ function fixture(name: string, options: { publishStub?: boolean } = {}): Fixture
 	copyFileSync(
 		join(REPO_ROOT, "sure", "runtime", "bundle_content.py"),
 		join(repoRoot, "sure", "runtime", "bundle_content.py"),
+	);
+	copyFileSync(
+		join(REPO_ROOT, "sure", "runtime", "gpu_partition.py"),
+		join(repoRoot, "sure", "runtime", "gpu_partition.py"),
 	);
 	for (const script of COPIED_SCRIPTS) {
 		copyFileSync(join(REAL_PACKAGE_DIR, "scripts", script), join(scriptsDir, script));

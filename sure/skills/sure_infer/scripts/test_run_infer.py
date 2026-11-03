@@ -28,6 +28,9 @@ PROBE_PASSED = {"passed": True, "failure_class": None, "evidence": "test runtime
 
 class RunInferTests(unittest.TestCase):
     def setUp(self) -> None:
+        policy = patch("sure.site.gpu_partition.load_site_policy", return_value=None)
+        policy.start()
+        self.addCleanup(policy.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
@@ -289,6 +292,21 @@ class RunInferTests(unittest.TestCase):
         self.assertRegex(result["input_digest"], r"^[a-f0-9]{64}$")
         self.assertEqual(result["execution_path"], "local_docker")
         self.assertEqual(surface["execution"]["path_planned"], "local_docker")
+
+    def test_selected_budget_reaches_surface_and_result(self) -> None:
+        self.write_inputs(self.container_binding)
+        path = self.artifacts / "eval_input_resolved.json"
+        payload = json.loads(path.read_text())
+        payload["datasets"][0].update(planned_workers=2, selected_samples=2000, num_samples=2000)
+        payload["datasets"].append({"name": "excluded", "planned_workers": 4})
+        payload["runtime"].update(num_workers=6, worker_selection="auto", worker_policy="independent_samples_v1",
+                                  device={"request": "auto"})
+        path.write_text(json.dumps(payload))
+        _, result, _, surface = self.run_container([sys.executable, "-c", "pass"])
+        self.assertEqual(json.loads(path.read_text())["runtime"]["num_workers"], 2)
+        self.assertEqual(surface["env"]["SURE_INFER_NUM_WORKERS"], "2")
+        self.assertEqual(surface["inference_runtime"]["num_workers"], 2)
+        self.assertEqual(result["parallelism"]["requested_workers"], 2)
 
     def test_resolved_and_prepared_sources_keep_versions_and_tasks_through_the_gate(self) -> None:
         pool = self.root / "pool"

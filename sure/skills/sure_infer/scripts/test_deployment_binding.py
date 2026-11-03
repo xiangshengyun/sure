@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from unittest.mock import patch
 
 from container_execution import build_local_container_command, container_path
 from deployment_binding import (
@@ -77,6 +78,9 @@ class DeploymentBindingTests(unittest.TestCase):
         self.assertIn("node_environment_blockers", schema["properties"])
 
     def setUp(self) -> None:
+        policy = patch("sure.site.gpu_partition.load_site_policy", return_value=None)
+        policy.start()
+        self.addCleanup(policy.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

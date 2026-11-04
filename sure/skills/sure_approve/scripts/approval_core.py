@@ -1417,10 +1417,18 @@ def verify_runtime(run_dir: Path) -> dict[str, Any]:
         raise ApprovalError(f"candidate runtime verification failed: {smoke['stderr']}")
     if runtime_kind == "container" and not all(smoke["validation_evidence"].values()):
         failed = ", ".join(stage for stage, passed in smoke["validation_evidence"].items() if not passed)
+        # The exit code alone cannot tell "the run wrote its evidence somewhere
+        # else" from "the run failed", and an image that bakes a results
+        # directory outside the writable mount is where the first case comes
+        # from. Print that ENV, so the operator does not have to inspect the
+        # image by hand to learn where the run persisted its evidence.
+        image_env = _container_image_config(image_ref).get("env") or {}
         raise ApprovalError(
             "candidate runtime verification did not persist a passing result for: "
-            f"{failed}; the local container CLI can report exit code 0 for a failed run, "
-            f"so this smoke trusts the stage artifacts: {smoke['stderr']}"
+            f"{failed}; the container exited 0 but wrote no stage evidence into its only "
+            f"writable mount ({artifacts_target}), and the image's baked environment is "
+            f"{image_env}; a run that persists its results anywhere else leaves this smoke "
+            f"no evidence to read: {smoke['stderr']}"
         )
     server_smoke = _verify_container_server(candidate, binding) if runtime_kind == "container" else None
     image_config = (

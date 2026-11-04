@@ -140,6 +140,18 @@ class ContainerValidationMountTests(unittest.TestCase):
         with self.assertRaisesRegex(approval_core.ApprovalError, "did not persist a passing result"):
             self._verify(write_results=False)
 
+    def test_missing_stage_evidence_names_the_mount_and_the_image_env(self) -> None:
+        # An image that bakes a results directory outside the writable mount
+        # makes the run exit 0 with no evidence to read. The message has to say
+        # where the harness looked and what the image says, or the operator
+        # has to inspect the image by hand to find the cause.
+        with self.assertRaises(approval_core.ApprovalError) as raised:
+            self._verify(write_results=False)
+        message = str(raised.exception)
+        self.assertIn("/workspace/model/artifacts", message)
+        self.assertIn("MODEL_PATH", message)
+        self.assertNotIn("secret", message)
+
     def test_validation_mount_target_normalizes_a_trailing_slash(self) -> None:
         _, _, observed = self._verify(model_target="/workspace/model/")
 

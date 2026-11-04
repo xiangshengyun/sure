@@ -20,6 +20,7 @@ from deployment_contract import (
     document_timestamp,
     resolve_model_dir,
     validate_container_runtime_contract,
+    validate_image_runtime_env,
     validate_runtime_path_env,
     validate_runtime_roles,
 )
@@ -336,6 +337,37 @@ class DockerDeliveryContractTests(unittest.TestCase):
             with self.subTest(env=env):
                 with self.assertRaisesRegex(ValueError, key):
                     validate_runtime_path_env(env, target, source=source)
+
+    def test_a_baked_artifacts_directory_must_be_the_writable_one(self) -> None:
+        """An image that redirects the results directory fails the package gate.
+
+        The approval smoke reads validate.py's stage evidence from the single
+        writable mount it makes. An image that bakes the results directory
+        elsewhere sends that evidence into the container's own layer, where it
+        dies with the container: the run exits 0 and leaves nothing to read.
+        """
+        target = "/model"
+        validate_runtime_path_env({"SURE_ARTIFACTS_DIR": "/model/artifacts"}, target, source="config.yaml server.env")
+        validate_image_runtime_env(["SURE_ARTIFACTS_DIR=/model/artifacts"], target)
+        for env in ({"SURE_ARTIFACTS_DIR": "/outputs"}, {"ARTIFACTS_DIR": "/sure-output"}):
+            with self.subTest(env=env):
+                with self.assertRaisesRegex(ValueError, "ARTIFACTS_DIR"):
+                    validate_runtime_path_env(env, target, source="config.yaml server.env")
+        with self.assertRaisesRegex(ValueError, "SURE_ARTIFACTS_DIR"):
+            validate_image_runtime_env(["SURE_ARTIFACTS_DIR=/outputs"], target)
+
+        dockerfile = self.model_dir / "Dockerfile"
+        dockerfile.write_text(
+            "FROM python:3.12\n"
+            "ENV SURE_ARTIFACTS_DIR=/outputs\n"
+            "WORKDIR /model\n",
+            encoding="utf-8",
+        )
+        runtime = dict(self.validation["model_runtime"])
+        runtime["working_dir"] = "/model"
+        runtime["server_command"] = ["python", "/model/server.py"]
+        with self.assertRaisesRegex(ValueError, "SURE_ARTIFACTS_DIR"):
+            validate_container_runtime_contract(dockerfile, runtime)
 
     def test_dockerfile_pythonpath_must_match_model_runtime(self) -> None:
         dockerfile = self.model_dir / "Dockerfile"

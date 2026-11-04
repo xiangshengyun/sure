@@ -1,11 +1,11 @@
 # develop 分支对比与完备性分析（2026-11-03）
 
-对比 `develop`（`a495f657`）与 `main`（`cf8d389e`, tag `m-0.0.6`），审查 develop
+对比 `develop`（`20df1b76`）与 `main`（`cf8d389e`, tag `m-0.0.6`），审查 develop
 相对 main 的增量改动是否完备。
 
 ## 结论摘要
 
-截至提交 `a495f657`，develop 相对 main 的**净改动为 20 个代码文件 / +1703 −23，全部在 `sure/skills/`**
+截至提交 `20df1b76`，develop 相对 main 的**净改动为 20 个代码文件 / +1721 −24，全部在 `sure/skills/`**
 （另有本文档 1 个文件），实质内容
 是一件事：**给容器交付补上"路径契约"** —— 模型包在镜像里被挂到哪个绝对路径，Dockerfile、
 镜像实际 ENV、`config.yaml server.env` 三处必须一致。
@@ -20,8 +20,17 @@
 逐条一致。复核发现的 `sys.path` 模块遮蔽问题已修复：infer 现在使用命名空间导入 onboard 的契约模块，
 不会覆盖 infer 自己的 `docker_runtime`。`_refuse_renamed_bundle_root` 死代码也已删除。详见 §三·复核新增。
 
-**本文档的边界**：上一版复核只记录问题；本次已实施 §三·复核新增中的导入遮蔽修复和死代码清理，
-并补充了存量 inventory 迁移说明。
+**本文档的边界**：上一版复核只记录问题；随后已实施 §三·复核新增中的导入遮蔽修复和死代码清理，
+并补充了存量 inventory 迁移说明。最新一轮又把剩余的文档/文案缺口补齐
+（`env_docker.md` 的 `--entrypoint`、`write_runtime_inventory.py` 的 Dockerfile 存在性检查、
+`verify_live_image` 的 WORKDIR 空值文案、`sure_infer/SKILL.md` 的判定描述），
+并给共享规则补了直接用例；只剩 §六 第 9 条的取舍待维护者拍板。
+
+**运行期新发现（2026-11-04）**：一次真实 `/sure_approve` 被 `verify_runtime` 阻断。根因是镜像把
+产物目录内置到了挂载点之外（`SURE_ARTIFACTS_DIR=/outputs`），审批 smoke 读不到阶段证据，
+而容器退出码仍是 0。共享路径契约只校验**读**路径、没校验**写**路径，正是缺口所在；本轮
+已把写路径规则补进同一个校验器（打包闸门即拒），并改写了审批失败信息以打印镜像内置 ENV。
+详见 §三·复核新增。
 
 ## 改动必要性分层
 
@@ -55,11 +64,11 @@
 | 关系 | 结果 |
 | --- | --- |
 | `main` 是否 `develop` 的祖先 | 是（`git rev-list --count develop..main` = 0，合并是 fast-forward） |
-| `develop` 领先 `main` | 33 个 commit（其中 7 个是 merge） |
-| `develop` 领先 `upstream/harness-tui-agent` | 60 个 commit |
-| **净树差异** | **21 文件 / +2115 / −23**（代码 20 文件 / +1703 / −23，另有本文档 1 个） |
+| `develop` 领先 `main` | 34 个 commit（其中 7 个是 merge） |
+| `develop` 领先 `upstream/harness-tui-agent` | 61 个 commit |
+| **净树差异** | **21 文件 / +2167 / −24**（代码 20 文件 / +1721 / −24，另有本文档 1 个） |
 
-33 个 commit 里只有 8 个真正产生内容差异，即 `fix/container-runtime-contract-20261027`
+34 个 commit 里只有 9 个真正产生内容差异，即 `fix/container-runtime-contract-20261027`
 那条线加两轮收尾提交：
 
 ```
@@ -71,6 +80,7 @@ b00a0456 fix(agent): start approval container smokes with --entrypoint
 ac6dfe6e fix(agent): drive the approved tool and preflight infer paths
 31ef1150 fix(agent): align container approval and inference contracts
 a495f657 fix(agent): align shared container path validation
+20df1b76 fix(agent): close container contract review gaps
 ```
 
 其余 18 个（RIR 集成、TTA 集成、SURE skill bridge、engine bump、Worker device 归一化等）在
@@ -78,7 +88,7 @@ main 上已经通过 `upstream/harness-tui-agent` 有了同内容副本；两次
 `Merge branch 'main' into develop`（`81360eb5`、`c41d21ba`）之后它们在树上变成空操作。
 
 `git cherry main develop` 仍把这 18 个标成 `+`（基线不同导致 patch-id 不匹配），所以
-`git log main..develop` 会显示 33 行噪音，其中 18 行是重复内容。
+`git log main..develop` 会显示 34 行噪音，其中 18 行是重复内容。
 
 **历史整理建议不作为合并前置条件：main 已是 develop 的祖先，最终树差异没有重复代码。是否整理重复语义 commit 属于团队历史策略，不影响功能合并。
 
@@ -207,18 +217,29 @@ approved container mount"而不是"这个路径不在 bundle 内"。
 
 现已改为越界即抛（绝对路径，或含 `/`、`\`）。**遗留风险**：字面量提示词只要含 `/`
 （例如 `"ASR/NLU 模型"`、`"https://..."`）现在也会被拒。`/outside/input.wav` 这类绝对路径
-有测试覆盖，含斜杠的字面量没有。判定可再收窄到"绝对路径"。
+有测试覆盖，含斜杠的字面量没有。
 
-### 🟡 低：其余
+**本轮决定不改**：收窄到"绝对路径"会让**相对** fixture 路径重新被当字面量传给工具
+（`_container_argument` 用 `Path(value).resolve()`，相对值是按**当前工作目录**解析的，
+不在 bundle 内 → 抛 → 落到字面量分支），而服务器在容器里按自己的 WORKDIR 解析相对路径，
+有时反而是对的。现在的取舍是：含 `/` 的越界路径**响亮地拒**，错误信息已经说明
+"the container mounts only the bundle, at `<target>`"，操作者把 fixture 改写成
+bundle 内的绝对路径即可。代价是含 `/` 的**字面量**提示词也会被拒 —— 冒烟 fixture
+用得少，是否再收窄由维护者定。
 
-- `write_runtime_inventory.py` 调 `validate_container_runtime_contract` 前没确认 Dockerfile
-  存在（`check_container_package.py:160` 有），缺文件时抛的是未包装的 `FileNotFoundError`。
-- `verify_live_image` 现在总比 WORKDIR，基镜像没设 WORKDIR 时 `Config.WorkingDir` 是 `""`，
-  `normpath("")` = `"."`，报错文案会是 `WORKDIR '' disagrees with ...`，不如写成
-  "镜像未声明 WORKDIR"。
-- `container_execution.py:228` 的注释"`working_dir` is not required to equal the target
+### 🟡 低：其余 —— 已处理
+
+- ✅ `write_runtime_inventory.py` 现在在 `validate_container_runtime_contract` 前确认
+  Dockerfile 存在（`check_container_package.py` 有同样的检查），缺文件时给出可读的
+  `ValueError`，不再抛未包装的 `FileNotFoundError`。
+- ✅ `verify_live_image` 的 WORKDIR 空值文案改成"digest-pinned image declares no WORKDIR"，
+  不再是 `WORKDIR '' disagrees with ...`；**WORKDIR 不一致时的原文案保留**
+  （`test_docker_delivery_contract.py` 有断言依赖）。
+- ⚠️ `container_execution.py:228` 的注释"`working_dir` is not required to equal the target
   (sure_trans mounts the model elsewhere)"已过时：`write_runtime_inventory.py` 现在强制两者
-  相等。trans 走自己的 writer，不受影响，但注释会误导。
+  相等。trans 走自己的 writer，不受影响，但注释会误导。**保留**：它描述的是
+  `validate_infer_path_contract` 里 `server_command` 路径用"包含"而非"相等"的规则，
+  这一点没变；变的是 `server.env` 的 `MODEL_DIR` 判定。注释应拆成两句，而不是整句删。
 
 ## 三·复核新增（本轮修复引入 / 遗留）
 
@@ -276,6 +297,61 @@ approve 与 onboard 两个目录**没有**同名模块。
 它原来守的"改名根"规则已被共享函数的包含判定覆盖（`/model` 不在 `/workspace/model`
 之下 → 拒），消息文案换了但拦截没丢。按“删除优于新增”已删除。
 
+### 🔴 高：镜像把产物目录指向挂载点之外 —— 运行证据丢失，审批被拒（已修）
+
+**现象**（`/sure_approve` 的 `verify_runtime` 阻断）：
+
+```
+candidate runtime verification did not persist a passing result for: import, load, infer, contract;
+the local container CLI can report exit code 0 for a failed run, so this smoke trusts the stage artifacts
+```
+
+诊断报告给出的根因：镜像内置了 `SURE_ARTIFACTS_DIR=/outputs`，而审批 smoke 只挂载
+`/model`（只读）和 `/model/artifacts`（可写），`validate.py` 因此把结果写进容器自身的
+可写层；`--rm` 退出后文件消失，容器退出码仍是 0，审批侧读不到任何阶段证据，判定为
+“无证据的 vacuous pass”。同一 argv 只增加 `SURE_ARTIFACTS_DIR=/model/artifacts` 后
+import/load/infer/contract 全部通过（约 20 秒），说明候选模型本身是好的，**是打包配置
+而不是模型推理的问题**。
+
+**已确认的代码事实**：
+
+- `SURE_ARTIFACTS_DIR` **全仓 0 命中**，`git log --all -S"SURE_ARTIFACTS_DIR"` 也 **0 命中**
+  —— 它是模型自造变量，不是 harness 定义的契约。
+- approve smoke 的挂载只有两处：`approval_core.py:1402-1405`
+  （`<model_target>` 只读 + `<model_target>/artifacts` 可写）；`/outputs` 不在其中。
+- harness 自带的模板 `sure_onboard/scripts/templates/validate.py:32-33` 把产物目录写死为
+  `Path(__file__).resolve().parent / "artifacts"`，**不读任何环境变量**，所以官方模板永远
+  产生不了这个失败。
+- “无证据即拒”是 `approval_core.py` 的既定行为，不是 bug。
+
+**harness 侧的缺口**：共享路径契约 `deployment_contract._validate_runtime_path_env`
+（`:367`）只校验**读**路径（`MODEL_PATH` / `MODEL_DIR` / `SURE_MODEL_DIR` / `PYTHONPATH` /
+`PYTHONHOME`），**没有校验写路径**。而审批的“阶段证据”规则恰恰依赖写路径，于是这类
+“镜像内置了挂载点之外的绝对路径”的缺陷可以完整通过 onboard（含打包闸门、push、digest
+解析），只在 approve（已经占了 GPU、已经拉了镜像）才暴露。读写不对称就是缺口本身。
+
+**本次修复**：
+
+1. `approval_core.py` 的阶段证据失败信息改为指名可写挂载点，并打印镜像内置 ENV（已脱敏）。
+   原文案写的是“本地容器 CLI 可能对失败返回 0”，指向的是错误的原因，而且**从不显示**
+   `SURE_ARTIFACTS_DIR`——运维只能自己 `docker image inspect` 才能定位。
+2. 写路径规则进共享校验器 `_validate_runtime_path_env`：镜像 ENV、Dockerfile ENV、
+   `config.yaml server.env` 三个闸门统一生效；被打包闸门
+   （`check_container_package.py:87` → `validate_image_runtime_env`）在 push 之后、
+   approve 之前就拒，不再浪费一整轮 approve。
+3. 文档：`sure_onboard/SKILL.md` 的 `generate_wrapper` 契约与
+   `references/playbooks/env_docker.md` 的运行时契约都写明产物目录就是 bundle 自己的
+   `artifacts/`（容器内 `<working_dir>/artifacts`），镜像不得内置把它指到别处的变量。
+
+**边界与取舍**：
+
+- 规则按变量名匹配（名字含 `ARTIFACT` 且以 `DIR` 结尾），变量名归生产者所有，属于启发式；
+  但仓库内没有任何 Dockerfile 内置这类变量（全仓 Dockerfile 扫描 0 命中），误报代价是重建镜像。
+- **没有**在 approve 阶段注入环境变量兜底：那会改变被审计镜像的运行配置，审批就证明了
+  一个没被审的东西。
+- **没有**改成“按镜像声明的产物目录额外挂一个可写卷”：那等于给镜像一条可写路径的注入口
+  （镜像可以声明任意路径），并且改变了 approve 所证明的语义。作为备选记在第六节。
+
 ### 🟡 低：infer 侧 `MODEL_DIR`/`SURE_MODEL_DIR` 由“包含”收紧为“相等”（已补迁移说明）
 
 旧 infer 用 `_posix_within`（包含），共享函数用相等（`!= working_dir` 即拒）。
@@ -290,9 +366,10 @@ approve 与 onboard 两个目录**没有**同名模块。
 | 检查 | 结果 |
 | --- | --- |
 | `npm run check` | **12/12 通过**（连续两次复核均为 12/12；此前记录的 10/12 未复现） |
-| `sure_approve` 全量 | **78 tests OK**（较上一轮 +2，即新增的两个用例） |
+| `sure_approve` 全量 | **79 tests**（较上一轮 +3：共享规则 2 + 诊断信息 1） |
 | `sure_infer` 全量 | 777 tests，**1 error** = 存量 CRLF 用例；遮蔽引入的 5 个已消失 |
-| `sure_onboard` 全量 | 183 tests，1 失败（存量） |
+| `sure_onboard` 全量 | 185 tests（+1 写路径规则的直接用例），1 失败（存量） |
+| 本轮改动的失败集对比 | `git stash` 前后逐 skill 跑全量，失败用例名单 **diff 为空**（只有用例计数 +1/+1 与耗时差异） |
 | 遮蔽复检 | `docker_runtime` → `sure_infer/scripts/docker_runtime.py`，`SURE_EVAL_DOCKER_BIN` **在位** |
 | 三闸门一致性实测 | 15 组声明 × 3 闸门，approve/infer **逐条一致** |
 
@@ -388,24 +465,39 @@ has SURE_EVAL_DOCKER_BIN: False
    新的 `check_runtime_inventory.py` 要求它等于 `model_bundle.target`，存量的会挂；
    同时提示 `MODEL_DIR`/`SURE_MODEL_DIR` 必须是 `working_dir` 本身而非子目录）。
 
+**本轮一并补齐**：
+
+4. ✅ `env_docker.md` 第 4 步写明"每次 `docker run` 都要显式 `--entrypoint <interpreter>`"，
+   并说明镜像自带 ENTRYPOINT 时会变成 `python3 python3 validate.py`。
+5. ✅ `write_runtime_inventory.py` 在 `validate_container_runtime_contract` 前确认 Dockerfile
+   存在，缺文件时给出可读的 `ValueError`（`main()` 已捕获，打印
+   `write_runtime_inventory failed: ...` 并返回 1），不再抛未包装的 `FileNotFoundError`。
+6. ✅ `verify_live_image` 的 WORKDIR 空值文案改成"digest-pinned image declares no WORKDIR"，
+   不再报 `WORKDIR '' disagrees with ...`。**WORKDIR 不一致时的原文案不变**
+   （`test_docker_delivery_contract.py` 有断言依赖）。
+7. ✅ `sure_infer/SKILL.md` 的新一节把判定写准：`MODEL_PATH` 必须在挂载点下，
+   `MODEL_DIR`/`SURE_MODEL_DIR` 必须**等于**挂载点，`PYTHONPATH`/`PYTHONHOME`
+   **只有路径含 `model` 段时才检查**，其余绝对路径属于镜像、放行。
+8. ✅ 补了共享规则的**直接**用例
+   （`test_docker_delivery_contract.py::test_the_shared_runtime_path_rule_is_one_rule_for_every_gate`）：
+   6 组合法声明放行、6 组越界声明拒绝（含 `..` 逃逸、`MODEL_DIR` 子目录、
+   非 model 段的 `PYTHONHOME` 放行、`${VAR}` 延迟展开跳过）。
+   共享函数此前只被三个闸门间接覆盖，没有直接断言。
+
 **仍待处理**：
 
-4. `env_docker.md` 的 `--entrypoint` 说明仍可作为后续文档增强项 —— onboard 自己的容器校验
-   （`run_validate.py` 的 `rewrite_container_env`）只保留 agent 写的 `--entrypoint`，不会补。
-5. `write_runtime_inventory.py` 调 `validate_container_runtime_contract` 前确认 Dockerfile 存在
-   （`check_container_package.py:160` 有这个检查，这里缺），缺文件时抛的是未包装的
-   `FileNotFoundError`。
-6. `verify_live_image` 的 WORKDIR 空值文案改成"镜像未声明 WORKDIR"
-   （基镜像没设 WORKDIR 时 `Config.WorkingDir` 是 `""`，现在报
-   `WORKDIR '' disagrees with ...`）。
-7. `sure_infer/SKILL.md` 的新一节把判定写准：`PYTHONPATH`/`PYTHONHOME` **只有路径含
-   `model` 段时才检查**，`MODEL_DIR`/`SURE_MODEL_DIR` 要**等于**挂载点而不只是在其下。
-8. `approval_core.py` 的 `_authored_smoke_arguments` 兜底判定可再收窄到"绝对路径"，
-   免得含 `/` 的字面量提示词被误拒；或补一条含斜杠字面量的用例。
-9. 补一条跨阶段契约测试：同一份 `config.yaml server.env` 喂给 onboard / approve / infer
-   三个闸门，断言三者的判定与错误文本一致 —— 这正是本分支想消灭的那类漂移。
-   共享函数目前只被三个闸门各自间接覆盖，没有直接的一致性断言。
+9. `approval_core.py` 的 `_authored_smoke_arguments` 兜底判定**不改**。
+   收窄到"绝对路径"会让相对 fixture 路径重新被当字面量传给工具；而放宽又会放回
+   越界绝对路径。现在的取舍是：含 `/` 的越界路径**响亮地拒**（错误信息已说明
+   "the container mounts only the bundle, at <target>"），操作者改写成 bundle 内的绝对路径即可。
+   代价是含 `/` 的**字面量**提示词也会被拒 —— 冒烟 fixture 用得少，值不值得再收窄由维护者定。
 10. 如需整理历史，可单独规划 rebase；不作为功能合并前置条件。
+11. **备选（本轮未做）**：让 approve 的容器 smoke 额外按镜像声明的产物目录挂一个可写卷，
+   使"镜像自带 `SURE_ARTIFACTS_DIR`"这类候选也能通过审批。**未做**的理由：镜像可以声明
+   任意路径，等于给它一条可写路径的注入口；而且 approve 证明的语义会从"按 harness 契约
+   运行"变成"按镜像声明运行"。真要做，必须先约束挂载目标（不得是 `/`、不得在模型挂载点之下）。
+   当前的取舍是：这种候选在**打包闸门**就被拒（写路径规则），由生产者重打镜像，
+   比在审批阶段给镜像开可写路径更干净。
 
 ## 七、值得保留的实现
 
@@ -431,11 +523,13 @@ review 时不要改掉这几处：
 | 位置 | 内容 |
 | --- | --- |
 | `sure/skills/sure_onboard/scripts/deployment_contract.py:367` | `_validate_runtime_path_env`（母本） |
-| `sure/skills/sure_onboard/scripts/deployment_contract.py:421` | `validate_runtime_path_env`（公共入口） |
-| `sure/skills/sure_onboard/scripts/deployment_contract.py:426` | `validate_image_runtime_env` |
-| `sure/skills/sure_onboard/scripts/deployment_contract.py:447` | `validate_container_runtime_contract` |
+| `sure/skills/sure_onboard/scripts/deployment_contract.py:440` | `validate_runtime_path_env`（公共入口） |
+| `sure/skills/sure_onboard/scripts/deployment_contract.py:445` | `validate_image_runtime_env` |
+| `sure/skills/sure_onboard/scripts/deployment_contract.py:466` | `validate_container_runtime_contract` |
 | `sure/skills/sure_onboard/scripts/deployment_contract.py:166` | `_server_protocol_module`（惰性插入路径的正确范例） |
 | `sure/skills/sure_approve/scripts/approval_core.py:877` | 容器分支调用共享 env 校验 |
+| `sure/skills/sure_approve/scripts/approval_core.py:1402` | 容器 smoke 的两处挂载（模型只读 + `artifacts` 可写） |
+| `sure/skills/sure_approve/scripts/approval_core.py:1418` | 阶段证据失败信息（现指名可写挂载点 + 打印镜像 ENV） |
 | `sure/skills/sure_approve/scripts/approval_core.py:718` | `_redacted_env`（原 `_refuse_renamed_bundle_root` 位置，死代码已删） |
 | `sure/skills/sure_approve/scripts/approval_core.py:1122` | `_verify_container_server` |
 | `sure/skills/sure_approve/scripts/approval_core.py:1178/1400` | `--entrypoint` |

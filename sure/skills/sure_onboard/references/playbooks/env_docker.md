@@ -25,6 +25,8 @@ Only the final build stage counts. `WORKDIR` and `ENV` set in an earlier stage d
 
 Every literal absolute path in `server_command` must be under `working_dir`, unless explicitly listed in `model_runtime.external_command_paths`. Use that list only for known image-owned executables/scripts or independently mounted inputs, for example `"external_command_paths": ["/usr/local/bin/python", "/opt/vendor/server.py"]`. Relative entries such as `server.py` run under `working_dir`. Never use the exception list to point a model-bundle entrypoint at a different mount root; the digest-pinned image check does not prove that a path belongs to the model bundle.
 
+The validation run persists its results in the bundle's `artifacts/` directory, which is `<working_dir>/artifacts` in the container -- the only path the approval smoke mounts writable, and the only place it can read the stage evidence from. An image that bakes a results directory anywhere else (`ENV SURE_ARTIFACTS_DIR=/outputs`, for example) sends that evidence into the container's own layer, where it dies with the container: the run exits 0 and the approval gate sees a pass with no evidence behind it. Leave such a variable unset or point it at `<working_dir>/artifacts`; the package gate rejects any other absolute path.
+
 `runtime_inventory.json` must expose:
 
 - `execution_mode: container_only`;

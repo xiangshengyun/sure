@@ -416,6 +416,25 @@ def _validate_runtime_path_env(
                 raise ValueError(
                     f"{source} PYTHONPATH entry {entry!r} does not use model_runtime.working_dir {working_dir!r}"
                 ) from exc
+    # The write path the read paths above cannot see. The approval smoke mounts
+    # one writable directory, <working_dir>/artifacts, and reads validate.py's
+    # stage evidence from it; an image that bakes a results directory
+    # elsewhere sends that evidence into the container's own layer, where it
+    # disappears with the container and the run looks like a pass with nothing
+    # behind it. The variable name belongs to the producer, but every name for
+    # that directory ends in DIR and names ARTIFACT.
+    canonical_artifacts = posixpath.normpath(str(target / "artifacts"))
+    for variable, value in settings.items():
+        name = variable.upper()
+        if "ARTIFACT" not in name or not name.endswith("DIR"):
+            continue
+        declared_artifacts = _normalized_container_path(value, base=path_base)
+        if declared_artifacts and declared_artifacts != canonical_artifacts:
+            raise ValueError(
+                f"{source} {variable} {value!r} disagrees with the writable artifacts directory "
+                f"{canonical_artifacts!r}; the validation run persists its results there and "
+                f"nothing else survives the container"
+            )
 
 
 def validate_runtime_path_env(settings: dict[str, str], working_dir: str, *, source: str) -> None:

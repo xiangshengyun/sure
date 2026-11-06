@@ -76,6 +76,10 @@ def ensure_safe_bundle_targets(model_dir: Path, resolved: dict[str, Any]) -> Non
     while pending:
         directory = pending.pop()
         for child in directory.iterdir():
+            # Excluded paths (.venv, __pycache__, caches) are not deployable bundle
+            # content, so a directory symlink inside them is not a publish hazard.
+            if is_excluded(child.relative_to(model_dir)):
+                continue
             if child.is_symlink():
                 if child.resolve().is_dir():
                     raise ValueError(

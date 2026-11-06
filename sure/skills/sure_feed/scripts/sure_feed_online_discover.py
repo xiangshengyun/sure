@@ -444,10 +444,14 @@ def match_result(args: argparse.Namespace, candidates: list[dict[str, Any]]) -> 
             "repo": item.get("repo"),
             "match": {
                 "matched": matched,
-                "task_type": task_type,
                 "score": score,
             },
         }
+        # "auto" is infer_task's internal no-match sentinel, not a SURE task. The
+        # MATCH_TASK gate rejects it and the schema types task_type as a string, so
+        # an unmatched candidate omits the key instead of carrying the sentinel.
+        if task_type and task_type != "auto":
+            row["match"]["task_type"] = task_type
         if matched:
             row["match"]["match_source"] = match_source
             row["match"]["evidence"] = evidence_items

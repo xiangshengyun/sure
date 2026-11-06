@@ -37,6 +37,7 @@ from sure_eval.evaluation.sure_evaluator import SUREEvaluator
 from sure_eval.reports import SOTAManager
 
 from protocol_writer import write_protocol_yaml as _write_protocol_yaml
+import prediction_path_localization
 from resolve_evaluation_engine import resolve_engine_root
 from evaluation_runtime import (
     EvaluationRuntimeError,
@@ -343,12 +344,12 @@ def _write_optional_source_file(samples: list[dict[str, Any]]) -> str | None:
 
 
 def _resolve_existing_prediction_path(value: Any, base_dir: Path) -> str:
-    path = Path(str(value)).expanduser()
-    if not path.is_absolute():
-        path = base_dir / path
-    if not path.exists():
-        raise FileNotFoundError(f"Prediction artifact does not exist: {path}")
-    return str(path.resolve())
+    localized = prediction_path_localization.resolve_existing(value, base_dir)
+    if localized is None:
+        raise FileNotFoundError(
+            f"Prediction artifact does not exist: {prediction_path_localization.primary_path(value, base_dir)}"
+        )
+    return str(localized.resolve())
 
 
 def _localize_sample_audio_path(value: Any, dataset_jsonl_path: Path) -> str:

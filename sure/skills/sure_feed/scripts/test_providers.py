@@ -16,6 +16,7 @@ from sure_feed.fixture_registry import select_fixture_for_task  # noqa: E402
 from sure_feed.providers.base import ProviderNetworkError, ProviderRequest, infer_task, synthesize_model_input, task_defaults, to_yaml  # noqa: E402
 from sure_feed.providers.huggingface import HuggingFaceProvider  # noqa: E402
 from sure_feed_online_discover import parse_model_url  # noqa: E402
+from sure_feed_online_discover import match_result as discover_match_result  # noqa: E402
 from sure.runtime.evaluation.task_registry import canonical_tasks  # noqa: E402
 
 
@@ -507,6 +508,22 @@ pip install sherpa-onnx
         self.assertEqual(score, 0.0)
         self.assertEqual(evidence, [])
         self.assertEqual(match_source, "")
+
+    def test_unmatched_candidate_omits_the_auto_sentinel_from_match_task_result(self) -> None:
+        candidate = {
+            "source": "github",
+            "model_id": "octocat/Spoon-Knife",
+            "repo": "https://github.com/octocat/Spoon-Knife",
+            "description": "This repo is for demonstration purposes only.",
+        }
+        args = mock.Mock(task="auto")
+        result, by_id = discover_match_result(args, [candidate])
+        match = result["candidates"][0]["match"]
+        self.assertFalse(match["matched"])
+        self.assertEqual(match["score"], 0.0)
+        self.assertNotIn("task_type", match)
+        self.assertNotIn("match_source", match)
+        self.assertEqual(by_id["octocat/Spoon-Knife"]["task_type"], "auto")
 
     def test_github_never_defaults_weights_source_to_github(self) -> None:
         model_input, weak_fields, _evidence = synthesize_model_input(

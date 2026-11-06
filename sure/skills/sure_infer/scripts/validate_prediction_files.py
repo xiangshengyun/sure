@@ -25,6 +25,8 @@ from sure_eval.core.config import Config
 from sure_eval.core.logging import configure_logging, get_logger
 from sure_eval.datasets import DatasetManager
 
+import prediction_path_localization
+
 for _parent in Path(__file__).resolve().parents:
     if (_parent / "sure" / "runtime" / "evaluation" / "task_registry.py").is_file():
         sys.path.insert(0, str(_parent))
@@ -110,6 +112,10 @@ def _resolve_audio_path(value: Any, base_dir: Path | None) -> Path:
                 path = remapped
     if not path.is_absolute() and base_dir is not None:
         path = base_dir / path
+    if not path.exists():
+        localized = prediction_path_localization.resolve_existing(value, base_dir)
+        if localized is not None:
+            return localized
     return path
 
 

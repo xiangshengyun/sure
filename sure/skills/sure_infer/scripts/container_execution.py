@@ -353,6 +353,15 @@ def build_local_container_command(
         env.update(DEVICE="cpu", SURE_EVAL_DEVICE_ACTUAL="cpu", CUDA_VISIBLE_DEVICES="")
     env.update(
         {
+            # The image runs as the calling uid, and a cluster home on shared
+            # storage makes site.ENABLE_USER_SITE true inside it: without these
+            # the image's interpreter imports ~/.local/lib/pythonX/site-packages
+            # ahead of its own conda env. The surface probe and the trusted-host
+            # Python route already isolate the user site; the inference launch
+            # must match them or the probe validates an environment the run
+            # never uses.
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
             "MODEL_DIR": model_target,
             "SURE_EVAL_APPROVED_MODEL_DIR": model_target,
             "RUN_DIR": output_target,

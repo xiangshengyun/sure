@@ -13,7 +13,13 @@
  */
 const READ_ONLY_HEAD = /^(?:cat|head|tail|less|more|grep|rg|sed|awk|wc|ls|stat|file|diff|md5sum|sha256sum|nl|od|xxd)$/;
 const SHELL_SPLIT = /\|\||&&|[;&|\n]/;
-const UNBOUNDED_ROOT = /^(?:\/|~(?:\/|$)|\/mnt(?:\/|$)|\/hpc_stor\d*(?:\/|$))/;
+const UNBOUNDED_ROOT = /^(?:\/$|~(?:\/|$)|\/mnt\/?$|\/hpc_stor\d*\/?$)/;
+/** Mount roots whose paths are as broad as a filesystem root; subpaths stay allowed. */
+const UNBOUNDED_MOUNT_ROOTS = new Set(["/mnt/lustre"]);
+
+function isUnboundedRoot(token: string): boolean {
+	return UNBOUNDED_ROOT.test(token) || UNBOUNDED_MOUNT_ROOTS.has(token);
+}
 
 export function invokedSkillScripts(command: string, prefix = "scripts"): string[] {
 	const pattern = new RegExp(`${prefix}/([A-Za-z0-9_]+\\.py)\\b`, "g");
@@ -53,23 +59,23 @@ export function isUnboundedFilesystemSearch(command: string): boolean {
 			continue;
 		}
 		if (executable === "find") {
-			const rootPath = tokens.slice(1).find((token) => UNBOUNDED_ROOT.test(token));
+			const rootPath = tokens.slice(1).find((token) => isUnboundedRoot(token));
 			if (rootPath) {
 				return true;
 			}
 		}
-		if (executable === "grep" && tokens.some((token) => token === "-r" || token === "-R" || token === "--recursive")) {
-			const rootPath = tokens.slice(1).some((token) => UNBOUNDED_ROOT.test(token));
+		if (
+			executable === "grep" &&
+			tokens.some((token) => token === "-r" || token === "-R" || token === "--recursive")
+		) {
+			const rootPath = tokens.slice(1).some((token) => isUnboundedRoot(token));
 			if (rootPath) {
 				return true;
 			}
 		}
 		if (executable === "rg") {
 			const nonOptions = tokens.slice(1).filter((token) => !token.startsWith("-"));
-			if (
-				nonOptions.length <= 1 ||
-				nonOptions.slice(1).some((token) => UNBOUNDED_ROOT.test(token))
-			) {
+			if (nonOptions.length <= 1 || nonOptions.slice(1).some((token) => isUnboundedRoot(token))) {
 				return true;
 			}
 		}

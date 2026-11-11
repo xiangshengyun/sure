@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -232,10 +233,12 @@ async function createSureHarness(options?: {
 	projectTrusted?: boolean;
 	uiContext?: ExtensionUIContext;
 	mode?: ExtensionMode;
+	tools?: AgentTool[];
 }): Promise<Harness> {
 	const harness = await createHarness({
 		extensionFactories: [sureExtension],
 		settings: {},
+		tools: options?.tools,
 	});
 	if (options?.projectTrusted !== undefined) {
 		harness.settingsManager.setProjectTrusted(options.projectTrusted);
@@ -1899,6 +1902,72 @@ describe("Sure extension", () => {
 		const lastInfo = notifications.filter((entry) => entry.type === "info").at(-1);
 		expect(lastInfo?.message).toContain("SURE initialized");
 		expect(lastInfo?.message).toContain("Switched to kimi-coding/kimi-for-coding.");
+	});
+
+	it("injects a bounded bash timeout for sure_feed without overriding explicit timeouts", async () => {
+		const seen: Array<Record<string, unknown>> = [];
+		const bashTool: AgentTool = {
+			name: "bash",
+			label: "bash",
+			description: "Records the arguments the SURE extension passes through.",
+			parameters: Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number()) }),
+			execute: async (_toolCallId, input) => {
+				seen.push(input as Record<string, unknown>);
+				return { content: [{ type: "text", text: "ok" }], details: {} };
+			},
+		};
+		const harness = await createSureHarness({ tools: [bashTool] });
+		cleanups.push(harness.cleanup);
+		setupSkillPackage(harness.tempDir);
+
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", { command: 'rg -n "speaker-verification" sure/runtime' })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage([fauxToolCall("bash", { command: 'rg -n "task_type" sure/handoffs', timeout: 7 })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage(
+				[fauxToolCall("bash", { command: "python3 scripts/xforge_modelscope_fetch.py --download" })],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("/sure_feed topic");
+		await harness.session.agent.waitForIdle();
+
+		expect(seen.map((input) => input.timeout)).toEqual([60, 7, 600]);
+	});
+
+	it("does not inject a bash timeout for sure_infer or sure_eval", async () => {
+		const seen: Array<Record<string, unknown>> = [];
+		const bashTool: AgentTool = {
+			name: "bash",
+			label: "bash",
+			description: "Records the arguments the SURE extension passes through.",
+			parameters: Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number()) }),
+			execute: async (_toolCallId, input) => {
+				seen.push(input as Record<string, unknown>);
+				return { content: [{ type: "text", text: "ok" }], details: {} };
+			},
+		};
+
+		for (const command of ["sure_infer", "sure_eval"]) {
+			const harness = await createSureHarness({ tools: [bashTool] });
+			cleanups.push(harness.cleanup);
+			setupSkillPackage(harness.tempDir, { command });
+			harness.setResponses([
+				fauxAssistantMessage([fauxToolCall("bash", { command: "rg -n demo sure/models" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("done"),
+			]);
+			await harness.session.prompt(`/${command} demo`);
+			await harness.session.agent.waitForIdle();
+		}
+
+		expect(seen.map((input) => input.timeout)).toEqual([undefined, undefined]);
 	});
 });
 

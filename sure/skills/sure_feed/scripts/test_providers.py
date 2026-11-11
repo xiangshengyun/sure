@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -517,8 +520,26 @@ pip install sherpa-onnx
         self.assertEqual(len(diagnostics), 1)
         self.assertEqual(diagnostics[0]["candidate"], "owner/ambiguous")
         self.assertFalse(match["candidates"][0]["match"]["matched"])
+        self.assertNotIn("task_type", match["candidates"][0]["match"])
         self.assertTrue(match["candidates"][1]["match"]["matched"])
         self.assertTrue(by_id["owner/sv-model"]["matched"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            produces = Path(tmp) / "match_task_result.json"
+            produces.write_text(json.dumps(match), encoding="utf-8")
+            gate = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parent / "check_match_task.py"),
+                    "--run-dir",
+                    tmp,
+                    "--produces",
+                    str(produces),
+                ],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(gate.returncode, 0, gate.stderr)
 
     def test_auto_refuses_to_guess_between_two_tagged_tasks(self) -> None:
         with self.assertRaises(ValueError) as raised:

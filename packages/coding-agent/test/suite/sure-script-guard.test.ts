@@ -38,6 +38,15 @@ describe("isUnboundedFilesystemSearch", () => {
 		expect(isUnboundedFilesystemSearch('find / -name "*.py"')).toBe(true);
 		expect(isUnboundedFilesystemSearch('grep -r "speaker-verification" /')).toBe(true);
 		expect(isUnboundedFilesystemSearch('rg -n "funasr" /mnt/lustre')).toBe(true);
+		expect(isUnboundedFilesystemSearch('find /hpc_stor03 -name "*.py"')).toBe(true);
+	});
+
+	it("allows searches inside a known run directory on a shared mount", () => {
+		expect(isUnboundedFilesystemSearch('find /hpc_stor03/project/oref/inferenceTasks/abc/1 -name "*.json"')).toBe(
+			false,
+		);
+		expect(isUnboundedFilesystemSearch('rg -n "task_type" /hpc_stor03/project/oref')).toBe(false);
+		expect(isUnboundedFilesystemSearch('find /mnt/lustre/sjtu/shared -maxdepth 2 -name "*.py"')).toBe(false);
 	});
 
 	it("blocks searches without an explicit rg path", () => {
@@ -46,7 +55,7 @@ describe("isUnboundedFilesystemSearch", () => {
 
 	it("allows bounded project-relative searches", () => {
 		expect(isUnboundedFilesystemSearch('rg -n "speaker-verification" sure/runtime/evaluation')).toBe(false);
-		expect(isUnboundedFilesystemSearch('find sure/handoffs -maxdepth 2 -name model_input.yaml')).toBe(false);
+		expect(isUnboundedFilesystemSearch("find sure/handoffs -maxdepth 2 -name model_input.yaml")).toBe(false);
 		expect(isUnboundedFilesystemSearch('grep -r "task_type" sure/runtime/evaluation')).toBe(false);
 	});
 });

@@ -226,7 +226,8 @@ export function preToolCall(ctx: SureHookContext): SureHookResult {
 		const currentUnit = findUnit(checkpoint.data.currentUnit);
 		return {
 			ok: false,
-			repair: "SURE forbids unbounded filesystem searches. Use an explicit project-relative directory and pass a timeout if the scan can be slow.",
+			repair:
+				"SURE forbids unbounded filesystem searches. Use an explicit project-relative directory and pass a timeout if the scan can be slow.",
 			state_patch: {
 				phase: currentUnit ? phaseFor(currentUnit, "blocked") : undefined,
 				message: "Blocked unbounded filesystem search.",

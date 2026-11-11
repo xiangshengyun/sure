@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } fro
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { invokedSkillScripts } from "../../../../../sure/runtime/script-guard.ts";
 import {
 	type AgentEndEvent,
 	defineTool,
@@ -112,9 +113,21 @@ const MAX_FINISH_NUDGES = 3;
 const MAX_UNCHANGED_STATE_READS = 12;
 const MAX_IDENTICAL_BASH_FAILURES = 6;
 const DEFAULT_SURE_FEED_TOOL_TIMEOUT_SECONDS = 60;
+const LONG_RUNNING_FEED_TOOL_TIMEOUT_SECONDS = 600;
+const LONG_RUNNING_FEED_SCRIPTS = new Set([
+	"scripts/xforge_modelscope_fetch.py",
+	"scripts/xforge_process_to_oref.py",
+	"scripts/xforge_modelscope_dataset_to_oref.py",
+]);
 
 function isSureFeedRun(active: ActiveRun): boolean {
 	return active.skillPackage.manifest.command.replace(/^\/+/, "") === "sure_feed";
+}
+
+function sureFeedToolTimeoutSeconds(command: string): number {
+	return invokedSkillScripts(command).some((script) => LONG_RUNNING_FEED_SCRIPTS.has(script))
+		? LONG_RUNNING_FEED_TOOL_TIMEOUT_SECONDS
+		: DEFAULT_SURE_FEED_TOOL_TIMEOUT_SECONDS;
 }
 
 function hasUnresolvedToolCall(run: SureRunRecord): boolean {
@@ -216,10 +229,10 @@ export function buildResumePrompt(
 		"Read the existing artifacts before writing anything, and do not redo units that are already complete.",
 		...(interruptedToolCall
 			? [
-				"The previous tool call was interrupted or timed out before a tool result arrived.",
-				"Discard that investigation path. Do not retry broad searches.",
-				"Complete only the current unit's minimum artifact using bounded project-relative paths.",
-			]
+					"The previous tool call was interrupted or timed out before a tool result arrived.",
+					"Discard that investigation path. Do not retry broad searches.",
+					"Complete only the current unit's minimum artifact using bounded project-relative paths.",
+				]
 			: []),
 		"</sure_resume>",
 	].join("\n");
@@ -1242,8 +1255,13 @@ export function createSureExtension(): ExtensionFactory {
 			}
 			const runManager = new SureRunManager(active.record.cwd);
 			const input: unknown = event.input;
-			if (isSureFeedRun(active) && (event.toolName === "bash" || event.toolName === "powershell") && isStringRecord(input)) {
-				input.timeout ??= DEFAULT_SURE_FEED_TOOL_TIMEOUT_SECONDS;
+			if (
+				isSureFeedRun(active) &&
+				(event.toolName === "bash" || event.toolName === "powershell") &&
+				isStringRecord(input)
+			) {
+				const command = typeof input.command === "string" ? input.command : "";
+				input.timeout ??= sureFeedToolTimeoutSeconds(command);
 			}
 			if (event.toolName === "bash" && isStringRecord(input) && typeof input.command === "string") {
 				const checkpointData = runManager.readState(active.record)?.checkpoint?.data;

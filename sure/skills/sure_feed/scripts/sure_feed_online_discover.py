@@ -444,7 +444,7 @@ def match_result(
             matched, task_type, score, evidence_items, match_source = infer_task(item, args.task)
         except ValueError as exc:
             model_id = str(item.get("model_id") or "this candidate")
-            matched, task_type, score, evidence_items, match_source = False, "auto", 0.0, [], ""
+            matched, task_type, score, evidence_items, match_source = False, "", 0.0, [], ""
             diagnostics.append(
                 {
                     "source": "match_task",
@@ -453,19 +453,19 @@ def match_result(
                     "message": str(exc),
                 }
             )
+        match: dict[str, Any] = {"matched": matched, "score": score}
+        # check_match_task.py rejects task_type values outside accepted_tasks(), and "auto" is not one.
+        if task_type and task_type != "auto":
+            match["task_type"] = task_type
+        if matched:
+            match["match_source"] = match_source
+            match["evidence"] = evidence_items
         row = {
             "model_id": item["model_id"],
             "source": item.get("source"),
             "repo": item.get("repo"),
-            "match": {
-                "matched": matched,
-                "task_type": task_type,
-                "score": score,
-            },
+            "match": match,
         }
-        if matched:
-            row["match"]["match_source"] = match_source
-            row["match"]["evidence"] = evidence_items
         rows.append(row)
         by_id[item["model_id"]] = {"matched": matched, "task_type": task_type, "score": score, "evidence": evidence_items}
     return {"candidates": rows}, by_id, diagnostics

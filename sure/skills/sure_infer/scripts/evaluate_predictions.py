@@ -57,6 +57,38 @@ LOWER_IS_BETTER_METRICS = {
     "tts_cer",
     "vc_wer",
     "vc_cer",
+    "rir_npm",
+    "rt30_mae",
+    "rt60_mae",
+    "rir_drr_mae",
+    "rir_c50_mae",
+    "rir_c80_mae",
+    "rir_edc_mae",
+    "rir_iacc_mae",
+    "rir_iacc_full_mae",
+    "rir_iacc_early_mae",
+    "rir_iacc_late_mae",
+    "rir_itd_mae",
+    "rir_ild_mae",
+    "rir_ipd_mae",
+    "rir_doa_mae",
+}
+RIR_METRIC_UNITS = {
+    "rir_npm": "dB",
+    "rt30_mae": "s",
+    "rt60_mae": "s",
+    "rir_drr_mae": "dB",
+    "rir_c50_mae": "dB",
+    "rir_c80_mae": "dB",
+    "rir_edc_mae": "dB",
+    "rir_iacc_mae": "coefficient",
+    "rir_iacc_full_mae": "coefficient",
+    "rir_iacc_early_mae": "coefficient",
+    "rir_iacc_late_mae": "coefficient",
+    "rir_itd_mae": "ms",
+    "rir_ild_mae": "dB",
+    "rir_ipd_mae": "rad",
+    "rir_doa_mae": "degrees",
 }
 
 
@@ -367,6 +399,38 @@ def _sample_source_audio(sample: dict[str, Any]) -> str:
     )
 
 
+def _sample_reference_rir(sample: dict[str, Any]) -> str:
+    return str(
+        sample.get("reference_rir")
+        or sample.get("reference_rir_path")
+        or sample.get("ground_truth_rir")
+        or ""
+    )
+
+
+def _prediction_rir_path(structured: dict[str, Any], prediction: dict[str, Any]) -> Any:
+    return (
+        prediction.get("rir_path")
+        or prediction.get("prediction_rir")
+        or prediction.get("audio_path")
+        or structured.get("rir_path")
+        or structured.get("prediction_rir")
+        or structured.get("normalized_prediction")
+    )
+
+
+def _rir_metadata(sample: dict[str, Any], structured: dict[str, Any]) -> dict[str, Any]:
+    metadata = sample.get("metadata")
+    result = dict(metadata) if isinstance(metadata, dict) else {}
+    for key in ("sample_rate", "channel_layout", "microphone_spacing_m", "sound_speed_mps"):
+        value = sample.get(key)
+        if value is None:
+            value = structured.get(key)
+        if value is not None:
+            result[key] = value
+    return result
+
+
 def _write_external_audio_samples_jsonl(
     *,
     task: str,
@@ -386,6 +450,31 @@ def _write_external_audio_samples_jsonl(
         if structured is None:
             raise ValueError(f"Missing structured prediction row for {task_upper} sample: {key}")
         prediction = structured.get("prediction") if isinstance(structured.get("prediction"), dict) else {}
+        if task_upper == "RIR":
+            rir_path = _prediction_rir_path(structured, prediction)
+            reference_rir = _localize_sample_audio_path(_sample_reference_rir(sample), dataset_jsonl_path)
+            if not rir_path:
+                raise ValueError(f"Missing prediction RIR path for {task_upper} sample: {key}")
+            generated_rir = _resolve_existing_prediction_path(rir_path, structured_prediction_path.parent)
+            row = {
+                "sample_id": key,
+                "prediction_rir": generated_rir,
+                "reference_rir": reference_rir,
+                "metadata": _rir_metadata(sample, structured),
+            }
+            for field in ("sample_rate", "channel_layout"):
+                value = sample.get(field)
+                if value is None:
+                    value = structured.get(field)
+                if value is not None:
+                    row[field] = value
+            missing_roles = [role for role in ("prediction_rir", "reference_rir") if not row.get(role)]
+            if missing_roles:
+                raise ValueError(
+                    f"{task_upper} sample {key} is missing required role(s): {', '.join(missing_roles)}"
+                )
+            rows.append(row)
+            continue
         audio_path = prediction.get("audio_path") or structured.get("normalized_prediction")
         if not audio_path:
             raise ValueError(f"Missing prediction audio_path for {task_upper} sample: {key}")
@@ -447,6 +536,17 @@ def _write_external_audio_samples_jsonl(
                 "reference_text": _sample_reference_text(sample),
                 "language": language,
                 "metadata": {"dataset": structured.get("dataset"), "task": "TSE", "source_key": key},
+            }
+        elif task_upper == "TTA":
+            row = {
+                "sample_id": key,
+                "prediction_audio": generated_audio,
+                "reference_audio": _localize_sample_audio_path(
+                    sample.get("reference_audio"), dataset_jsonl_path
+                ),
+                "caption": str(sample.get("caption") or sample.get("text") or sample.get("prompt") or ""),
+                "language": language,
+                "metadata": {"dataset": structured.get("dataset"), "task": "TTA", "source_key": key},
             }
         else:
             raise ExternalEvaluationUnsupported(f"task {task!r} does not use samples_jsonl audio bridge")
@@ -1490,6 +1590,8 @@ def _is_lower_better_metric(metric: str) -> bool:
 
 def _metric_unit(metric: str) -> str:
     metric_name = str(metric or "").lower()
+    if metric_name in RIR_METRIC_UNITS:
+        return RIR_METRIC_UNITS[metric_name]
     if _is_lower_better_metric(metric_name):
         return "fraction"
     if metric_name in {"accuracy", "acc"}:
@@ -1504,6 +1606,9 @@ def _metric_unit(metric: str) -> str:
 def _metric_display(metric: str, score: Any) -> str:
     if not isinstance(score, (int, float)) or not math.isfinite(float(score)):
         return "N/A"
+    metric_name = str(metric or "").lower()
+    if metric_name in RIR_METRIC_UNITS:
+        return f"{float(score):.6f} {RIR_METRIC_UNITS[metric_name]}"
     if _is_lower_better_metric(metric):
         return f"{float(score) * 100:.2f}%"
     return f"{float(score):.6f}"
@@ -1890,6 +1995,10 @@ def _write_sample_report(
                 row["generated_audio"] = prediction
                 row["reference_text"] = _sample_reference_text(sample)
                 row["reference_audio"] = _sample_reference_audio(sample)
+            elif task == "TTA":
+                row["generated_audio"] = prediction
+                row["caption"] = str(sample.get("caption") or sample.get("text") or sample.get("prompt") or "")
+                row["reference_audio"] = str(sample.get("reference_audio") or "")
             elif task == "VC":
                 row["converted_audio"] = prediction
                 row["reference_text"] = _sample_reference_text(sample)
@@ -2296,6 +2405,7 @@ def main() -> int:
         action="append",
         help="Exact standalone sure-evaluation pipeline_id to run. Repeat to compare multiple pipelines for the same metric.",
     )
+    parser.add_argument("--dataset-pipeline-ids", type=str, help="JSON mapping from canonical dataset name to selected pipeline IDs")
     parser.add_argument(
         "--evaluation-backend",
         choices=("auto", "external", "legacy"),
@@ -2425,6 +2535,19 @@ def main() -> int:
                 pipeline_overrides.append(item)
     if pipeline_overrides and args.evaluation_backend == "legacy":
         raise ValueError("--pipeline-id requires --evaluation-backend external or auto with an external engine")
+    dataset_pipeline_ids: dict[str, list[str]] | None = None
+    if args.dataset_pipeline_ids:
+        if not pipeline_overrides or metric_overrides:
+            raise ValueError("--dataset-pipeline-ids requires --pipeline-id and cannot be combined with --metric")
+        selected = json.loads(Path(args.dataset_pipeline_ids).read_text(encoding="utf-8"))
+        expected = {dataset_manager.normalize_dataset_name(name) for name in args.dataset}
+        if not isinstance(selected, dict) or set(selected) != expected or any(
+            not isinstance(value, list) or not value or any(
+                not isinstance(pipeline, str) or pipeline not in pipeline_overrides for pipeline in value
+            ) for value in selected.values()
+        ):
+            raise ValueError("--dataset-pipeline-ids must map each requested dataset to nonempty selected pipeline IDs")
+        dataset_pipeline_ids = selected
     if not metric_overrides:
         metric_overrides = [None]
     task_hint = _metric_task_hint(metric_overrides)
@@ -2448,10 +2571,14 @@ def main() -> int:
             raise FileNotFoundError(f"Prediction file not found: {prediction_path}")
 
         request_failures: list[str] = []
+        dataset_requests = (
+            [(None, pipeline_id) for pipeline_id in dataset_pipeline_ids[canonical_name]]
+            if dataset_pipeline_ids is not None else evaluation_requests
+        )
         if args.evaluation_backend != "legacy" and resolved_engine is not None:
             applicable_requests = [
                 (metric_override, pipeline_id_override)
-                for metric_override, pipeline_id_override in evaluation_requests
+                for metric_override, pipeline_id_override in dataset_requests
                 if _external_metric_applies_to_task_language(
                     engine_root=resolved_engine[1],
                     metric=None if pipeline_id_override else metric_override,
@@ -2465,7 +2592,7 @@ def main() -> int:
         else:
             applicable_requests = [
                 (metric_override, None)
-                for metric_override, pipeline_id_override in evaluation_requests
+                for metric_override, pipeline_id_override in dataset_requests
                 if pipeline_id_override is None
                 if _legacy_metric_applies_to_task_language(metric_override, effective_task, dataset_language)
             ]

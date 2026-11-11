@@ -339,11 +339,34 @@ def _build_tool_arguments(
     task: str,
     language: str,
     argument_name: str,
-    audio_path: Path,
+    audio_path: Path | None,
     output_audio_dir: Path,
     tool_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     task_name = task.upper()
+    if task_name == "TTA":
+        key = str(sample.get("key", "sample"))
+        caption = str(
+            sample.get("caption")
+            or sample.get("text")
+            or sample.get("prompt")
+            or sample.get("target")
+            or ""
+        ).strip()
+        if not caption:
+            raise ValueError(f"TTA sample has no text caption: {key}")
+        output_audio_dir.mkdir(parents=True, exist_ok=True)
+        output_audio_path = str(output_audio_dir / f"{_safe_filename(key)}.wav")
+        arguments = {
+            "text": caption,
+            "caption": caption,
+            "prompt": caption,
+            "output_path": output_audio_path,
+            "audio_path": output_audio_path,
+        }
+        if tool_args:
+            arguments.update(tool_args)
+        return arguments
     if task_name == "KWS":
         arguments: dict[str, Any] = {
             argument_name: str(audio_path),
@@ -878,7 +901,7 @@ def _worker_request(call: Any, process: subprocess.Popen[str], request: dict[str
 
 
 def _prediction_projection(value: Any, *, task: str) -> str:
-    if task.upper() in {"TTS", "VC", "SE", "TSE", "SD", "SA-ASR", "SA_ASR"}:
+    if task.upper() in {"TTS", "VC", "SE", "TSE", "TTA", "SD", "SA-ASR", "SA_ASR"}:
         return _path_text(value, field="prediction")
     return _single_line_text(value)
 
@@ -904,6 +927,16 @@ def _process_device(requested: str | None) -> str:
     if match and len(visible.split(",")) == 1 and visible == match.group(1):
         return "cuda:0"
     return request
+
+
+def _worker_model_device(requested: str | None) -> str:
+    """Return a model-facing device token for a single-GPU Worker."""
+    value = str(requested or "").strip().lower()
+    if value in {"", "auto", "cuda"}:
+        return value or "auto"
+    if re.fullmatch(r"cuda:\d+", value):
+        return "cuda"
+    raise ValueError(f"Worker mode requires device=auto or device=cuda, got {requested!r}")
 
 
 def _load_existing_predictions(path: Path, *, exclude_keys: set[str] | None = None) -> dict[str, str]:
@@ -1335,8 +1368,9 @@ def main() -> int:
     if args.worker_mode:
         # The Worker owns the GPU; an approved server env must not widen it.
         env["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_VISIBLE_DEVICES"]
-        env["DEVICE"] = "cuda:0"
-        env["SURE_EVAL_DEVICE_ACTUAL"] = "cuda:0"
+        worker_device = _worker_model_device(args.device or env.get("DEVICE"))
+        env["DEVICE"] = worker_device
+        env["SURE_EVAL_DEVICE_ACTUAL"] = worker_device
     protocol_id = args.protocol
     protocol_resolution = _resolve_protocol_parameters(protocol_id, model_dir, env)
 
@@ -1539,7 +1573,11 @@ def main() -> int:
                         continue
 
                     try:
-                        audio_path = _materialize_sample_audio(repo_root, sample, scratch_dir)
+                        audio_path = (
+                            None
+                            if _normalize_task(sample_task) == "TTA"
+                            else _materialize_sample_audio(repo_root, sample, scratch_dir)
+                        )
                         arguments = _build_tool_arguments(
                             repo_root=repo_root,
                             sample=sample,

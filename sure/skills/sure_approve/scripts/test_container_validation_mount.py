@@ -91,6 +91,27 @@ class ContainerValidationMountTests(unittest.TestCase):
         self.assertEqual(observed["copied_files"], ["artifact_manifest.json", "fixture_manifest.json"])
         self.assertEqual(result["status"], "passed")
 
+    def test_smoke_runs_the_binding_interpreter_and_mount_paths(self) -> None:
+        # The image may declare an ENTRYPOINT and bake MODEL_DIR for the path it
+        # was built with. The smoke has to speak the binding's contract instead:
+        # the mounted model directory in MODEL_DIR/SURE_MODEL_DIR, the writable
+        # overlay in SURE_ARTIFACTS_DIR, and the model interpreter as the
+        # entrypoint with validate.py as the whole command.
+        _, _, observed = self._verify()
+
+        command = observed["command"]
+        assert isinstance(command, list)
+        self.assertIn("--entrypoint", command)
+        self.assertEqual(command[command.index("--entrypoint") + 1], "/usr/local/bin/python")
+        for expected in (
+            "MODEL_DIR=/workspace/model",
+            "SURE_MODEL_DIR=/workspace/model",
+            "SURE_ARTIFACTS_DIR=/workspace/model/artifacts",
+        ):
+            self.assertIn(expected, command)
+        image_index = next(index for index, value in enumerate(command) if value.startswith("registry.example/demo@sha256:"))
+        self.assertEqual(command[image_index + 1 :], ["/workspace/model/validate.py"])
+
     def test_validation_mount_target_normalizes_a_trailing_slash(self) -> None:
         _, _, observed = self._verify(model_target="/workspace/model/")
 

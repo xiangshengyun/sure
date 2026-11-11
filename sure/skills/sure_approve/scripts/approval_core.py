@@ -985,20 +985,42 @@ def verify_runtime(run_dir: Path) -> dict[str, Any]:
                 os.chmod(overlay_root, 0o777)
                 for name in overlay_files:
                     os.chmod(Path(overlay_root) / name, 0o666)
+            # The binding, not the image, decides where the bundle lives and
+            # which interpreter runs it. An image built for this contract bakes
+            # MODEL_DIR/SURE_MODEL_DIR for the path it was built with and may
+            # declare an ENTRYPOINT, while the approved mount target is the one
+            # the inference client uses -- and that client names it in MODEL_DIR,
+            # applies the model's declared server.env, and starts the model
+            # through its own interpreter rather than the image entrypoint. A
+            # smoke that trusted the baked paths ran validate.py against a tree
+            # that does not exist under the mount, and one that left the
+            # entrypoint in place ran `python python validate.py`. The same three
+            # names are what make the overlay above the directory validate.py
+            # actually writes: with the image's own SURE_ARTIFACTS_DIR in force
+            # the stage results land in the image and a failure reports nothing.
+            python_executable = str(container["python_executable"])
             command = [
                 "docker",
                 "run",
                 "--rm",
+                "--entrypoint",
+                python_executable,
                 "--mount",
                 f"type=bind,src={candidate},dst={model_target},readonly",
                 "--mount",
                 f"type=bind,src={validation_output},dst={artifacts_target}",
+                "--env",
+                f"MODEL_DIR={model_target}",
+                "--env",
+                f"SURE_MODEL_DIR={model_target}",
+                "--env",
+                f"SURE_ARTIFACTS_DIR={artifacts_target}",
                 "--workdir",
                 str(container["working_dir"]),
             ]
             if container.get("gpu_required") is True:
                 command.extend(["--gpus", "all"])
-            command.extend([image_ref, str(container["python_executable"]), f"{model_target}/validate.py"])
+            command.extend([image_ref, f"{model_target}/validate.py"])
             command, child_env = partition_command(command, os.environ, "approve", device="auto" if container.get("gpu_required") is True else "cpu")
             completed = subprocess.run(command, capture_output=True, text=True, timeout=1800, check=False, env=child_env)
         smoke = {"command": command, "pull_stdout_sha256": sha256_bytes(pull.stdout.encode()), "exit_code": completed.returncode, "stdout_sha256": sha256_bytes(completed.stdout.encode()), "stderr": completed.stderr[-2000:]}

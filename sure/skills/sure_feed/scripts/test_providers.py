@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -15,7 +16,7 @@ import check_model_input as check_model_input_module  # noqa: E402
 from sure_feed.fixture_registry import select_fixture_for_task  # noqa: E402
 from sure_feed.providers.base import ProviderNetworkError, ProviderRequest, infer_task, synthesize_model_input, task_defaults, to_yaml  # noqa: E402
 from sure_feed.providers.huggingface import HuggingFaceProvider  # noqa: E402
-from sure_feed_online_discover import parse_model_url  # noqa: E402
+from sure_feed_online_discover import match_result, parse_model_url  # noqa: E402
 from sure.runtime.evaluation.task_registry import canonical_tasks  # noqa: E402
 
 
@@ -475,6 +476,49 @@ pip install sherpa-onnx
         self.assertEqual(task_type, "sd")
         self.assertEqual(match_source, "tags")
         self.assertGreater(score, 0)
+
+    def test_campplus_model_card_prefers_explicit_speaker_verification(self) -> None:
+        matched, task_type, score, evidence, match_source = infer_task(
+            {
+                "source": "modelscope",
+                "model_id": "iic/speech_campplus_sv_zh-cn_16k-common",
+                "repo": "https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common",
+                "model_card_text": (
+                    "This CAM++ model provides speaker-verification pipeline output, "
+                    "speaker embeddings and similarity. FunASR also includes ASR and VAD components."
+                ),
+            },
+            "auto",
+        )
+        self.assertTrue(matched)
+        self.assertEqual(task_type, "sv")
+        self.assertEqual(match_source, "modelscope_readme")
+        self.assertGreater(score, 0.8)
+        self.assertIn("speaker-verification", {item.get("value") for item in evidence})
+
+    def test_match_result_isolates_ambiguous_candidate_and_continues(self) -> None:
+        match, by_id, diagnostics = match_result(
+            SimpleNamespace(task="auto"),
+            [
+                {
+                    "source": "github",
+                    "model_id": "owner/ambiguous",
+                    "repo": "https://github.com/owner/ambiguous",
+                    "tags": ["speech-recognition", "text-to-speech"],
+                },
+                {
+                    "source": "modelscope",
+                    "model_id": "owner/sv-model",
+                    "repo": "https://modelscope.cn/models/owner/sv-model",
+                    "model_card_text": "speaker-verification model",
+                },
+            ],
+        )
+        self.assertEqual(len(diagnostics), 1)
+        self.assertEqual(diagnostics[0]["candidate"], "owner/ambiguous")
+        self.assertFalse(match["candidates"][0]["match"]["matched"])
+        self.assertTrue(match["candidates"][1]["match"]["matched"])
+        self.assertTrue(by_id["owner/sv-model"]["matched"])
 
     def test_auto_refuses_to_guess_between_two_tagged_tasks(self) -> None:
         with self.assertRaises(ValueError) as raised:

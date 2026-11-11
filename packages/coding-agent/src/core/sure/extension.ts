@@ -110,6 +110,42 @@ interface ActiveRun {
 const MAX_FINISH_NUDGES = 3;
 const MAX_UNCHANGED_STATE_READS = 12;
 const MAX_IDENTICAL_BASH_FAILURES = 6;
+const DEFAULT_SURE_FEED_TOOL_TIMEOUT_SECONDS = 60;
+
+function isSureFeedRun(active: ActiveRun): boolean {
+	return active.skillPackage.manifest.command.replace(/^\/+/, "") === "sure_feed";
+}
+
+function hasUnresolvedToolCall(run: SureRunRecord): boolean {
+	try {
+		const pending = new Set<string>();
+		for (const line of readFileSync(resolve(run.runDir, "events.jsonl"), "utf-8").split("\n")) {
+			if (!line) {
+				continue;
+			}
+			try {
+				const parsed: unknown = JSON.parse(line);
+				if (!isRecord(parsed) || typeof parsed.type !== "string" || !isRecord(parsed.data)) {
+					continue;
+				}
+				const toolCallId = parsed.data.toolCallId;
+				if (typeof toolCallId !== "string") {
+					continue;
+				}
+				if (parsed.type === "tool_call") {
+					pending.add(toolCallId);
+				} else if (parsed.type === "tool_result") {
+					pending.delete(toolCallId);
+				}
+			} catch {
+				// Ignore malformed historical lines; resume can still use the checkpoint.
+			}
+		}
+		return pending.size > 0;
+	} catch {
+		return false;
+	}
+}
 
 function unfinishedUnit(state: SureDisplayState | undefined): string | undefined {
 	const data = state?.checkpoint?.data;
@@ -167,6 +203,7 @@ export function buildResumePrompt(
 	state: SureDisplayState | undefined,
 ): string {
 	const checkpoint = state?.checkpoint;
+	const interruptedToolCall = hasUnresolvedToolCall(run);
 	return [
 		buildInvocationPrompt(skillPackage, run),
 		"",
@@ -176,6 +213,13 @@ export function buildResumePrompt(
 		`Where it stopped: ${state?.message ?? "(not recorded)"}`,
 		`Resume from: ${checkpoint?.resume_hint ?? "(no hint recorded; read the run directory to see what is already done)"}`,
 		"Read the existing artifacts before writing anything, and do not redo units that are already complete.",
+		...(interruptedToolCall
+			? [
+				"The previous tool call was interrupted or timed out before a tool result arrived.",
+				"Discard that investigation path. Do not retry broad searches.",
+				"Complete only the current unit's minimum artifact using bounded project-relative paths.",
+			]
+			: []),
 		"</sure_resume>",
 	].join("\n");
 }
@@ -1117,6 +1161,9 @@ export function createSureExtension(): ExtensionFactory {
 			}
 			const runManager = new SureRunManager(active.record.cwd);
 			const input: unknown = event.input;
+			if (isSureFeedRun(active) && (event.toolName === "bash" || event.toolName === "powershell") && isStringRecord(input)) {
+				input.timeout ??= DEFAULT_SURE_FEED_TOOL_TIMEOUT_SECONDS;
+			}
 			if (event.toolName === "bash" && isStringRecord(input) && typeof input.command === "string") {
 				const checkpointData = runManager.readState(active.record)?.checkpoint?.data;
 				if (isStringRecord(checkpointData) && Array.isArray(checkpointData.completedUnits)) {

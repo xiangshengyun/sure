@@ -22,7 +22,7 @@ import {
 	settleOnTerminalFailure,
 	stripOutputDir,
 } from "../../../runtime/memory/hooks.ts";
-import { invokedSkillScripts } from "../../../runtime/script-guard.ts";
+import { invokedSkillScripts, isUnboundedFilesystemSearch } from "../../../runtime/script-guard.ts";
 import { validateSkillRuntimeBinding, writeSkillRuntimeBinding } from "../../../runtime/usage.ts";
 import {
 	advance,
@@ -221,6 +221,26 @@ export function preToolCall(ctx: SureHookContext): SureHookResult {
 	}
 	const input = isRecord(event.input) ? event.input : isRecord(toolCall.input) ? toolCall.input : {};
 	const command = typeof input.command === "string" ? input.command : "";
+	if (isUnboundedFilesystemSearch(command)) {
+		const checkpoint = readCheckpoint(ctx);
+		const currentUnit = findUnit(checkpoint.data.currentUnit);
+		return {
+			ok: false,
+			repair: "SURE forbids unbounded filesystem searches. Use an explicit project-relative directory and pass a timeout if the scan can be slow.",
+			state_patch: {
+				phase: currentUnit ? phaseFor(currentUnit, "blocked") : undefined,
+				message: "Blocked unbounded filesystem search.",
+				...(currentUnit ? { counters: countersFor(checkpoint.data, 1) } : {}),
+				diagnostics: [
+					{
+						severity: "error",
+						message: "The command would search outside an explicit project-relative scope.",
+						repair: "Use rg with a project-relative directory, or find with a bounded project path and maxdepth.",
+					},
+				],
+			},
+		};
+	}
 	const invokedScripts = invokedSkillScripts(command);
 	if (invokedScripts.length === 0) {
 		return { ok: true };

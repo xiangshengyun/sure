@@ -132,7 +132,7 @@ TASK_KEYWORDS: dict[str, tuple[str, ...]] = {
         "fireredlid",
     ),
     "se": ("speech enhancement", "speech-enhancement", "denoising", "noise suppression"),
-    "sv": ("speaker verification", "speaker-verification", "speaker embedding"),
+    "sv": ("sv", "speaker verification", "speaker-verification", "speaker embedding"),
     "tse": ("target speaker extraction", "target-speaker-extraction", "speaker extraction"),
     "vad": ("voice activity detection", "voice-activity-detection", "vad"),
 }
@@ -240,6 +240,48 @@ def _keyword_matches(text: str, keyword: str) -> bool:
     if len(normalized) <= 3 and normalized.isalnum():
         return re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", lowered) is not None
     return normalized in lowered
+
+
+def _auto_task_hits(candidate: dict[str, Any]) -> list[tuple[int, str, str, str]]:
+    """Return auto-match hits ordered by evidence strength.
+
+    Explicit provider fields and README task phrases outrank model-card prose
+    and generic descriptions. Short abbreviations remain token-bound matches,
+    so a model id such as ``speech_campplus_sv_...`` can corroborate SV without
+    matching unrelated words.
+    """
+    haystack_fields = _candidate_haystack(candidate)
+    hits: list[tuple[int, str, str, str]] = []
+    for field in ("tags",):
+        value = haystack_fields[field]
+        for task_name, keywords in TASK_KEYWORDS.items():
+            for keyword in keywords:
+                if _keyword_matches(value, keyword):
+                    hits.append((0, field, task_name, keyword))
+
+    model_card = haystack_fields["model_card"]
+    precise_card_hits = [
+        (1, "model_card", task_name, keyword)
+        for task_name, keywords in TASK_KEYWORDS.items()
+        for keyword in keywords
+        if len(keyword) > 3 and _keyword_matches(model_card, keyword)
+    ]
+    if precise_card_hits:
+        hits.extend(precise_card_hits)
+    else:
+        for field in ("model_id", "repo"):
+            value = haystack_fields[field]
+            for task_name, keywords in TASK_KEYWORDS.items():
+                for keyword in keywords:
+                    if _keyword_matches(value, keyword):
+                        hits.append((2, field, task_name, keyword))
+        for field in ("description", "model_card"):
+            value = haystack_fields[field]
+            for task_name, keywords in TASK_KEYWORDS.items():
+                for keyword in keywords:
+                    if _keyword_matches(value, keyword):
+                        hits.append((3, field, task_name, keyword))
+    return hits
 
 
 def _narrow_task_from_research(
@@ -367,21 +409,15 @@ def infer_task(candidate: dict[str, Any], requested_task: str) -> tuple[bool, st
 
     haystack_fields = _candidate_haystack(candidate)
     if target == "auto":
-        # A declared tag outranks any free-text mention; competing tasks inside the
-        # winning tier are reported, never guessed between.
-        hits = [
-            (field, task_name, keyword)
-            for task_name, keywords in TASK_KEYWORDS.items()
-            for field, value in haystack_fields.items()
-            for keyword in keywords
-            if _keyword_matches(value, keyword)
-        ]
-        tagged = [hit for hit in hits if hit[0] == "tags"]
-        best = tagged or hits
-        if not best:
+        # A declared tag or an explicit task phrase outranks generic prose;
+        # competing tasks inside the winning tier are reported, never guessed.
+        hits = _auto_task_hits(candidate)
+        if not hits:
             return False, "auto", 0.0, ev, ""
+        best_tier = min(hit[0] for hit in hits)
+        best = [hit for hit in hits if hit[0] == best_tier]
         first_hit: dict[str, str] = {}
-        for field, task_name, keyword in best:
+        for _tier, field, task_name, keyword in best:
             first_hit.setdefault(task_name, f"{task_name} from {field} ({keyword})")
         if len(first_hit) > 1:
             raise ValueError(
@@ -389,10 +425,12 @@ def infer_task(candidate: dict[str, Any], requested_task: str) -> tuple[bool, st
                 + ", ".join(first_hit[name] for name in sorted(first_hit))
                 + "; pass --task explicitly."
             )
-        field, task_name, keyword = best[0]
-        strength = "medium" if field == "tags" else "weak"
+        _tier, field, task_name, keyword = best[0]
+        strength = "strong" if _tier <= 1 else "medium" if field in {"tags", "model_id", "repo"} else "weak"
         ev.append(evidence(source, field, keyword, strength, url))
-        return True, task_name, 0.72 if strength == "medium" else 0.55, ev, field
+        match_source = "modelscope_readme" if field == "model_card" and source == "modelscope" else field
+        score = 0.9 if _tier == 0 else 0.84 if _tier == 1 else 0.72 if strength == "medium" else 0.55
+        return True, task_name, score, ev, match_source
 
     keywords = TASK_KEYWORDS.get(target, (target,))
     for field, value in haystack_fields.items():

@@ -23,7 +23,7 @@ import type {
 } from "../../src/core/extensions/index.ts";
 import { emitSessionShutdownEvent } from "../../src/core/extensions/runner.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
-import { switchToInitializedModel } from "../../src/core/sure/extension.ts";
+import { buildResumePrompt, switchToInitializedModel } from "../../src/core/sure/extension.ts";
 import { sureExtension } from "../../src/core/sure/index.ts";
 import type { SureInitManifest } from "../../src/core/sure/init-types.ts";
 import { runPrintMode } from "../../src/modes/print-mode.ts";
@@ -32,6 +32,47 @@ import { createHarness, getUserTexts, type Harness } from "./harness.ts";
 function writeJson(path: string, value: unknown): void {
 	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
 }
+
+describe("Sure resume prompt", () => {
+	it("warns against retrying an interrupted tool investigation", () => {
+		const runDir = mkdtempSync(join(tmpdir(), "sure-resume-prompt-"));
+		writeFileSync(
+			join(runDir, "events.jsonl"),
+			`${JSON.stringify({
+				type: "tool_call",
+				timestamp: "2026-11-11T18:00:00.000Z",
+				data: { toolName: "bash", toolCallId: "call-1", input: { command: "find /" } },
+			})}\n`,
+			"utf-8",
+		);
+		const prompt = buildResumePrompt(
+			{
+				manifest: { name: "sure_feed", command: "/sure_feed", prompt: "SKILL.md" },
+				manifestPath: join(runDir, "sure.skill.json"),
+				packageDir: runDir,
+				promptPath: join(runDir, "SKILL.md"),
+				source: "repository",
+				sourceRoot: runDir,
+				prompt: "Feed a model.",
+			},
+			{
+				runId: "resume-test",
+				skillName: "sure_feed",
+				command: "/sure_feed",
+				status: "running",
+				cwd: runDir,
+				packageDir: runDir,
+				runDir,
+				args: "",
+				startedAt: "2026-11-11T18:00:00.000Z",
+				updatedAt: "2026-11-11T18:00:00.000Z",
+			},
+			{ checkpoint: { id: "match_task", resume_hint: "Produce match_task_result.json." } },
+		);
+		expect(prompt).toContain("Discard that investigation path");
+		expect(prompt).toContain("Do not retry broad searches");
+	});
+});
 
 /** Minimal UI context that records notify() calls; every dialog method is a no-op stub. */
 function createNotifyCapturingUiContext(

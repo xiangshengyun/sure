@@ -433,11 +433,26 @@ def scan_result(args: argparse.Namespace, candidates: list[dict[str, Any]], diag
     }
 
 
-def match_result(args: argparse.Namespace, candidates: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+def match_result(
+    args: argparse.Namespace, candidates: list[dict[str, Any]]
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     by_id: dict[str, Any] = {}
     rows: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
     for item in candidates:
-        matched, task_type, score, evidence_items, match_source = infer_task(item, args.task)
+        try:
+            matched, task_type, score, evidence_items, match_source = infer_task(item, args.task)
+        except ValueError as exc:
+            model_id = str(item.get("model_id") or "this candidate")
+            matched, task_type, score, evidence_items, match_source = False, "auto", 0.0, [], ""
+            diagnostics.append(
+                {
+                    "source": "match_task",
+                    "status": "error",
+                    "candidate": model_id,
+                    "message": str(exc),
+                }
+            )
         row = {
             "model_id": item["model_id"],
             "source": item.get("source"),
@@ -453,7 +468,7 @@ def match_result(args: argparse.Namespace, candidates: list[dict[str, Any]]) -> 
             row["match"]["evidence"] = evidence_items
         rows.append(row)
         by_id[item["model_id"]] = {"matched": matched, "task_type": task_type, "score": score, "evidence": evidence_items}
-    return {"candidates": rows}, by_id
+    return {"candidates": rows}, by_id, diagnostics
 
 
 def metadata_result(candidates: list[dict[str, Any]]) -> dict[str, Any]:
@@ -832,7 +847,10 @@ def main() -> int:
         print("ERROR: no candidates discovered; wrote artifacts/debug/scan_result.json", file=sys.stderr)
         return 3
 
-    match, match_by_id = match_result(args, candidates)
+    match, match_by_id, match_diagnostics = match_result(args, candidates)
+    diagnostics.extend(match_diagnostics)
+    scan["diagnostics"] = diagnostics
+    write_json(debug_artifacts / "scan_result.json", scan)
     write_json(debug_artifacts / "match_task_result.json", match)
     matched_candidates = [item for item in candidates if match_by_id.get(item["model_id"], {}).get("matched")]
     matched_candidates.sort(key=lambda item: rank_score(item, match_by_id.get(item["model_id"], {})), reverse=True)

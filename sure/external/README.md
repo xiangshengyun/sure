@@ -12,7 +12,7 @@ sure/external/sure-evaluation  # local checkout, ignored by git
 Use the standalone evaluation engine:
 
 ```bash
-git clone https://github.com/PigeonDan1/sure-evaluation.git sure/external/sure-evaluation
+git clone https://github.com/xiangshengyun/sure-evaluation.git sure/external/sure-evaluation
 ```
 
 Do not commit absolute local symlinks. The harness code should discover the

@@ -1,35 +1,36 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import { needsCapabilityProbe, SURE_INIT_PROVIDER_OPTIONS } from "../../src/core/sure/init.ts";
+import { needsCapabilityProbe } from "../../src/core/sure/init.ts";
 import { listBuiltInProviderModels } from "../../src/core/sure/init-model-listing.ts";
+import type { SureInitProviderOption } from "../../src/core/sure/init-types.ts";
 import { createInMemoryModelRegistry } from "../model-runtime-test-utils.ts";
+
+// Local override: /sure_init offers no built-in providers, so these tests carry their own fixture.
+const deepseek: SureInitProviderOption = {
+	id: "deepseek",
+	name: "DeepSeek",
+	provider: "deepseek",
+	defaultModel: "deepseek-v4-flash",
+	authType: "api_key",
+	description: "Standard DeepSeek API",
+};
 
 afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
 describe("SURE init provider options", () => {
-	it("offers the built-in DeepSeek provider with its catalog default", () => {
-		expect(SURE_INIT_PROVIDER_OPTIONS.find((option) => option.id === "deepseek")).toEqual({
-			id: "deepseek",
-			name: "DeepSeek",
-			provider: "deepseek",
-			defaultModel: "deepseek-v4-flash",
-			authType: "api_key",
-			description: "Standard DeepSeek API",
-		});
-		expect(needsCapabilityProbe("deepseek", "deepseek-v4-flash")).toBe(false);
+	it("resolves the DeepSeek catalog default without a capability probe", () => {
+		expect(needsCapabilityProbe(deepseek.provider, deepseek.defaultModel)).toBe(false);
 	});
 
 	it("queries the official DeepSeek model list when auth is configured", async () => {
-		const option = SURE_INIT_PROVIDER_OPTIONS.find((entry) => entry.id === "deepseek");
-		if (!option) throw new Error("missing DeepSeek option");
 		const authStorage = AuthStorage.inMemory({ deepseek: { type: "api_key", key: "sk-live" } });
 		const registry = await createInMemoryModelRegistry(authStorage);
 		const fetchMock = vi.fn(async () => Response.json({ data: [{ id: "deepseek-v4-flash" }] }));
 		vi.stubGlobal("fetch", fetchMock);
 
-		const listing = await listBuiltInProviderModels(option, registry);
+		const listing = await listBuiltInProviderModels(deepseek, registry);
 
 		expect(listing).toEqual({ source: "live", models: [{ id: "deepseek-v4-flash" }] });
 		expect(fetchMock).toHaveBeenCalledWith(

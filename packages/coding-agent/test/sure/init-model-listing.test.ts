@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import { SURE_INIT_PROVIDER_OPTIONS } from "../../src/core/sure/init.ts";
 import {
 	describeListingSource,
 	fetchAnthropicModels,
@@ -9,10 +8,39 @@ import {
 	openAICompatibleModelsUrl,
 	openAICompatibleUrl,
 } from "../../src/core/sure/init-model-listing.ts";
+import type { SureInitProviderOption } from "../../src/core/sure/init-types.ts";
 import { createInMemoryModelRegistry } from "../model-runtime-test-utils.ts";
 
+// Local override: /sure_init offers no built-in providers, so these tests carry their own fixtures.
+const OPTIONS: Record<string, SureInitProviderOption> = {
+	openai: {
+		id: "openai",
+		name: "OpenAI GPT",
+		provider: "openai",
+		defaultModel: "gpt-5.6-sol",
+		authType: "api_key",
+		description: "Standard OpenAI API",
+	},
+	codex: {
+		id: "codex",
+		name: "OpenAI Codex",
+		provider: "openai-codex",
+		defaultModel: "gpt-5.5",
+		authType: "oauth",
+		description: "ChatGPT Plus/Pro subscription coding agent",
+	},
+	copilot: {
+		id: "copilot",
+		name: "GitHub Copilot",
+		provider: "github-copilot",
+		defaultModel: "claude-opus-4.6",
+		authType: "oauth",
+		description: "GitHub Copilot subscription (Claude / GPT)",
+	},
+};
+
 function optionById(id: string) {
-	const option = SURE_INIT_PROVIDER_OPTIONS.find((entry) => entry.id === id);
+	const option = OPTIONS[id];
 	if (!option) throw new Error(`missing option ${id}`);
 	return option;
 }

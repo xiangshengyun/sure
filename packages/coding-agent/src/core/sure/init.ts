@@ -34,66 +34,72 @@ import { discoverSureSkillPackages } from "./manifest.ts";
 
 export const SURE_INIT_VERSION = 3;
 
-/** Supported agent/provider options for /sure_init. */
+/**
+ * Supported agent/provider options for /sure_init.
+ *
+ * Local override (2026-11-12): built-in providers are disabled — the menu offers
+ * models.json gateways plus "Custom provider" only. Restore the entries below to
+ * bring the built-in rows back; nothing else depends on the array being non-empty.
+ */
 export const SURE_INIT_PROVIDER_OPTIONS: SureInitProviderOption[] = [
-	{
-		id: "codex",
-		name: "OpenAI Codex",
-		provider: "openai-codex",
-		defaultModel: "gpt-5.5",
-		authType: "oauth",
-		description: "ChatGPT Plus/Pro subscription coding agent",
-	},
-	{
-		id: "kimi-code",
-		name: "Kimi Code",
-		provider: "kimi-coding",
-		defaultModel: "kimi-for-coding",
-		authType: "api_key",
-		description: "Kimi dedicated coding endpoint",
-	},
-	{
-		id: "copilot",
-		name: "GitHub Copilot",
-		provider: "github-copilot",
-		defaultModel: "claude-opus-4.6",
-		authType: "oauth",
-		description: "GitHub Copilot subscription (Claude / GPT)",
-	},
-	{
-		id: "claude",
-		name: "Anthropic Claude",
-		provider: "anthropic",
-		defaultModel: "claude-opus-4-8",
-		authType: "api_key",
-		description: "Standard Anthropic API",
-	},
-	{
-		id: "openai",
-		name: "OpenAI GPT",
-		provider: "openai",
-		// Measured 2026-08-17: gpt-5.6-luna answers 403 through a relay (anti-forwarding
-		// check), so it cannot be the default. Sol answers on the responses protocol.
-		defaultModel: "gpt-5.6-sol",
-		authType: "api_key",
-		description: "Standard OpenAI API",
-	},
-	{
-		id: "deepseek",
-		name: "DeepSeek",
-		provider: "deepseek",
-		defaultModel: "deepseek-v4-flash",
-		authType: "api_key",
-		description: "Standard DeepSeek API",
-	},
-	{
-		id: "azure-openai",
-		name: "Azure OpenAI (Responses)",
-		provider: "azure-openai-responses",
-		defaultModel: "gpt-5.5",
-		authType: "api_key",
-		description: "Azure OpenAI Responses API",
-	},
+	// {
+	// 	id: "codex",
+	// 	name: "OpenAI Codex",
+	// 	provider: "openai-codex",
+	// 	defaultModel: "gpt-5.5",
+	// 	authType: "oauth",
+	// 	description: "ChatGPT Plus/Pro subscription coding agent",
+	// },
+	// {
+	// 	id: "kimi-code",
+	// 	name: "Kimi Code",
+	// 	provider: "kimi-coding",
+	// 	defaultModel: "kimi-for-coding",
+	// 	authType: "api_key",
+	// 	description: "Kimi dedicated coding endpoint",
+	// },
+	// {
+	// 	id: "copilot",
+	// 	name: "GitHub Copilot",
+	// 	provider: "github-copilot",
+	// 	defaultModel: "claude-opus-4.6",
+	// 	authType: "oauth",
+	// 	description: "GitHub Copilot subscription (Claude / GPT)",
+	// },
+	// {
+	// 	id: "claude",
+	// 	name: "Anthropic Claude",
+	// 	provider: "anthropic",
+	// 	defaultModel: "claude-opus-4-8",
+	// 	authType: "api_key",
+	// 	description: "Standard Anthropic API",
+	// },
+	// {
+	// 	id: "openai",
+	// 	name: "OpenAI GPT",
+	// 	provider: "openai",
+	// 	// Measured 2026-08-17: gpt-5.6-luna answers 403 through a relay (anti-forwarding
+	// 	// check), so it cannot be the default. Sol answers on the responses protocol.
+	// 	defaultModel: "gpt-5.6-sol",
+	// 	authType: "api_key",
+	// 	description: "Standard OpenAI API",
+	// },
+	// {
+	// 	id: "deepseek",
+	// 	name: "DeepSeek",
+	// 	provider: "deepseek",
+	// 	defaultModel: "deepseek-v4-flash",
+	// 	authType: "api_key",
+	// 	description: "Standard DeepSeek API",
+	// },
+	// {
+	// 	id: "azure-openai",
+	// 	name: "Azure OpenAI (Responses)",
+	// 	provider: "azure-openai-responses",
+	// 	defaultModel: "gpt-5.5",
+	// 	authType: "api_key",
+	// 	description: "Azure OpenAI Responses API",
+	// },
 ];
 
 /** True when models.json has to carry this model's protocol because pi-ai's catalog does not. */
@@ -502,9 +508,10 @@ export async function runSureInit(options: RunSureInitOptions): Promise<SureInit
 		entry = findMenuEntry(menu, args.optionId);
 		if (!entry) {
 			const builtInIds = SURE_INIT_PROVIDER_OPTIONS.map((option) => option.id).join(", ");
+			const builtInHint = builtInIds ? `a built-in id (${builtInIds}), ` : "";
 			return {
 				success: false,
-				message: `Unknown option "${args.optionId}". Use a built-in id (${builtInIds}), a models.json provider name, or "custom".`,
+				message: `Unknown option "${args.optionId}". Use ${builtInHint}a models.json provider name, or "custom".`,
 			};
 		}
 	} else if (ctx.hasUI) {

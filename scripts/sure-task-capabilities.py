@@ -236,6 +236,43 @@ def check_task_schema_enums(payload: dict[str, Any]) -> bool:
     return valid
 
 
+def check_fixture_index(payload: dict[str, Any]) -> bool:
+    """Ensure every profiled task has a row in the canonical fixture index."""
+    index_path = ROOT / "fixtures" / "tasks" / "README.md"
+    if not index_path.is_file():
+        print(f"fixture index is missing: {index_path.relative_to(ROOT)}", file=sys.stderr)
+        return False
+
+    indexed_tasks: set[str] = set()
+    in_task_index = False
+    for line in index_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            if in_task_index:
+                break
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        if cells[0].lower() == "task" and cells[1].lower() == "fixture index":
+            in_task_index = True
+            continue
+        if not in_task_index:
+            continue
+        fixture_index = cells[1]
+        if fixture_index.startswith("`") and fixture_index.endswith("/README.md`"):
+            indexed_tasks.add(fixture_index[1:-len("/README.md`")])
+
+    missing = sorted(set(payload["tasks"]) - indexed_tasks)
+    if missing:
+        print(
+            "fixtures/tasks/README.md is missing task index rows for: " + ", ".join(missing),
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
@@ -252,6 +289,7 @@ def main() -> int:
     if args.check:
         valid = check_file(OUTPUT_PATH, json_text) and check_file(TS_OUTPUT_PATH, ts_text)
         valid = check_task_schema_enums(payload) and valid
+        valid = check_fixture_index(payload) and valid
         if not valid:
             return 1
         not_ready = [task for task, item in payload["tasks"].items() if not item["ready"]]

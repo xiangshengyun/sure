@@ -301,7 +301,7 @@ export function preStart(ctx: SureHookContext): SureHookResult {
 	const resolvedInput = spawnSync(runtime.contract.python_executable, resolveArgs, {
 		cwd: ctx.packageDir,
 		encoding: "utf-8",
-		timeout: 120_000,
+		timeout: 1_200_000,
 		env: { ...process.env, ...harnessRuntimeEnv(runtime.contract) },
 	});
 	if (resolvedInput.status !== 0) {

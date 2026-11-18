@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { SureHookContext, SureHookResult } from "@earendil-works/pi-coding-agent/hooks";
 import { harnessRuntimeEnv, resolveHarnessPython } from "../../../runtime/harness/resolve.ts";
+import { splitArgs } from "../../../runtime/memory/hooks.ts";
 import { invokedSkillScripts } from "../../../runtime/script-guard.ts";
 import {
 	advance,
@@ -67,12 +68,12 @@ const INFERENCE_SURFACE = [
 function parseArgs(raw: string): Record<string, string> {
 	// Accept both "key value" and "key=value" forms, plus bare flags.
 	const out: Record<string, string> = {};
-	const tokens = raw.trim().split(/\s+/).filter(Boolean);
+	const tokens = splitArgs(raw).map((token) => token.value);
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i];
 		const eq = token.indexOf("=");
 		if (eq >= 0) {
-			out[token.slice(0, eq)] = token.slice(eq + 1);
+			out[token.slice(0, eq).replace(/^--?/, "")] = token.slice(eq + 1);
 			continue;
 		}
 		const key = token.replace(/^--?/, "");
@@ -185,8 +186,10 @@ export function preToolCall(ctx: SureHookContext): SureHookResult {
 	const toolCall = isRecord(event.toolCall) ? event.toolCall : {};
 	const toolName =
 		typeof event.toolName === "string" ? event.toolName : typeof toolCall.name === "string" ? toolCall.name : "";
-	if (toolName !== "bash") {
-		// Only bash tool calls can invoke backend scripts.
+	// pi also ships a powershell tool; a Windows user without Git Bash would
+	// otherwise run the same scripts with every ordering gate switched off.
+	if (toolName !== "bash" && toolName !== "powershell") {
+		// Only shell tool calls can invoke backend scripts.
 		return { ok: true };
 	}
 	const input = isRecord(event.input) ? event.input : isRecord(toolCall.input) ? toolCall.input : {};
@@ -529,6 +532,7 @@ export function preFinish(ctx: SureHookContext): SureHookResult {
 						? checkpoint.data.completedUnits
 						: [...checkpoint.data.completedUnits, LAST_UNIT.id],
 					retries: checkpoint.data.retries,
+					blocks: checkpoint.data.blocks,
 					failedArtifactDigests: checkpoint.data.failedArtifactDigests,
 				},
 				0,

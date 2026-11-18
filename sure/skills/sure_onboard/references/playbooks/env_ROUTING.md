@@ -17,7 +17,7 @@ Route from:
 
 Always read:
 
-- `docs/agents/model_tool_agent/policies/backend_selection.md`
+- `sure/skills/sure_onboard/references/policies/backend_selection.md`
 - this routing file
 
 Then read only the selected environment playbook.
@@ -66,10 +66,10 @@ Use this shape:
 {
   "context_selection": {
     "environment_playbooks_read": [
-      "docs/agents/model_tool_agent/playbooks/env_uv.md"
+      "sure/skills/sure_onboard/references/playbooks/env_uv.md"
     ],
     "environment_playbooks_skipped": [
-      "docs/agents/model_tool_agent/playbooks/env_docker.md"
+      "sure/skills/sure_onboard/references/playbooks/env_docker.md"
     ],
     "reason": "backend_choice.chosen_backend is uv"
   }

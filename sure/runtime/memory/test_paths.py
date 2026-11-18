@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import threading
@@ -95,6 +96,12 @@ class JsonlTests(unittest.TestCase):
         rows, bad = paths.read_jsonl(self.path)
         self.assertEqual([r["ok"] for r in rows], [1, 2])
         self.assertEqual(bad, 3)
+
+    def test_read_keeps_a_row_whose_text_holds_a_unicode_line_separator(self) -> None:
+        # append_jsonl writes U+2028 raw (ensure_ascii=False); only "\n" ends a row
+        paths.append_jsonl(self.path, {"note": "first\u2028second"}, 4096)
+        rows, bad = paths.read_jsonl(self.path)
+        self.assertEqual((rows, bad), ([{"note": "first\u2028second"}], 0))
 
     def test_read_missing_file_is_empty(self) -> None:
         self.assertEqual(paths.read_jsonl(self.path), ([], 0))
@@ -215,9 +222,34 @@ class LockAndTreeTests(unittest.TestCase):
         else:  # no fcntl / msvcrt: lock is a no-op and we only assert nothing hangs
             self.assertEqual(sorted(order), ["a-in", "a-out", "b-in"])
 
+    @unittest.skipUnless(os.name == "nt", "msvcrt LK_LOCK gives up after ~10 s only on Windows")
+    def test_lock_waits_past_ten_seconds_on_windows(self) -> None:
+        # Another session holds the lock longer than msvcrt LK_LOCK's ten one-second retries.
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, time; from pathlib import Path; sys.path.insert(0, sys.argv[1])\n"
+             "from memory import paths\n"
+             "with paths.memory_lock(Path(sys.argv[2])):\n"
+             "    print('held', flush=True); time.sleep(12)",
+             str(Path(__file__).resolve().parents[1]), str(self.root)],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "held")
+            with paths.memory_lock(self.root):
+                self.assertIsNotNone(holder.poll(), "acquired while the other process still held the lock")
+        finally:
+            holder.wait(30)
+            holder.stdout.close()
+
     def test_repo_root_from_package_dir(self) -> None:
         pkg = self.root.parent / "skills" / "sure_onboard"
-        self.assertEqual(paths.repo_root_from_package_dir(pkg), self.root.parent.parent)
+        # repo_root_from_package_dir resolves its input, and on Windows a temp dir can
+        # surface under its 8.3 short name; compare resolved forms, not spellings.
+        self.assertEqual(
+            paths.repo_root_from_package_dir(pkg).resolve(),
+            (self.root.parent.parent).resolve(),
+        )
         self.assertEqual(paths.memory_root(self.root.parent.parent), self.root)
 
 

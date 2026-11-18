@@ -74,6 +74,6 @@ Validation should include at least one positive and one negative sample.
 
 ## Related Tool-Agent Memory
 
-- `docs/agents/model_tool_agent/task_playbooks/KWS.md`
-- `docs/agents/model_tool_agent/contracts/fixture_policy.md`
-- `docs/agents/model_tool_agent/contracts/minimal_validation.md`
+- `sure/skills/sure_onboard/references/task_playbooks/KWS.md`
+- `sure/skills/sure_onboard/references/contracts/fixture_policy.md`
+- `sure/skills/sure_onboard/references/contracts/minimal_validation.md`

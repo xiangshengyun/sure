@@ -86,10 +86,10 @@ def prepare_target(target: Path, replace_symlink: bool, replace_existing_adoptio
         if not target.is_dir():
             raise FileExistsError(f"{target} exists and is not a directory.")
         if any(target.iterdir()):
-            prior_adoption = is_prior_adoption(target)
-            if not prior_adoption and not replace_existing_adoption:
-                raise FileExistsError(f"{target} is not empty; refusing to overwrite a local model directory.")
-            if replace_existing_adoption and not prior_adoption:
+            if not replace_existing_adoption:
+                hint = "; pass --replace-existing-adoption to replace it" if is_prior_adoption(target) else ""
+                raise FileExistsError(f"{target} is not empty; refusing to overwrite a local model directory{hint}.")
+            if not is_prior_adoption(target):
                 raise FileExistsError(
                     f"{target} is not a previous adopt_reference_model.py output; refusing to overwrite it."
                 )
@@ -138,7 +138,11 @@ def link_asset_children(reference_dir: Path, target_dir: Path) -> None:
             dest = dest_root / child.name
             if dest.exists() or dest.is_symlink():
                 continue
-            dest.symlink_to(child)
+            try:
+                dest.symlink_to(child)
+            except OSError:
+                # Windows refuses symlinks without Developer Mode or admin rights.
+                copy_into_harness(child, dest)
 
 
 def copy_reference_artifacts(reference_dir: Path, target_dir: Path) -> None:

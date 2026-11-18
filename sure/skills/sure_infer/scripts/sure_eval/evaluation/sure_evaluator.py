@@ -55,14 +55,18 @@ def _strip_punct_all(text: str) -> str:
 
 
 def _strip_eval_punct_text(text: str) -> str:
-    """Match evaluation-pipeline clean_marks.strip_all_punct text behavior."""
+    """Match evaluation-pipeline clean_marks.strip_all_punct text behavior, except that a
+    slash or backslash separates words ("and/or" -> "and or"). Every other mark is
+    still dropped, so "U.S." stays "US" and "it's" stays "its"."""
     cleaned = []
     for ch in text:
         try:
             unicodedata.name(ch)
         except ValueError:
             continue
-        if ch.isprintable() and ch not in PUNCT_SET:
+        if ch in '/\\':
+            cleaned.append(' ')
+        elif ch.isprintable() and ch not in PUNCT_SET:
             cleaned.append(ch)
     return ''.join(cleaned)
 
@@ -406,6 +410,12 @@ class SUREEvaluator:
             Evaluation result (format varies by task)
         """
         task_lower = task.lower()
+        if task_lower in {"lid", "language_identification"}:
+            raise ValueError(
+                "The legacy evaluation backend does not support LID. Use "
+                "--evaluation-backend external, or auto with the evaluation "
+                "engine installed (initialise the sure-evaluation submodule)."
+            )
         task_name = self.TASK_MAP.get(task_lower, task_lower)
         
         if task_name == "asr_wer":
@@ -471,7 +481,7 @@ class SUREEvaluator:
             hyp_file_lines = f.readlines()
         
         for line in ref_file_lines:
-            parts = line.strip().split('\t', 1)
+            parts = line.rstrip('\r\n').split('\t', 1)
             if len(parts) == 2:
                 key, text = parts
                 text_norm = asr_num2words(text, self.language, map_dir=map_dir, debug=False)
@@ -479,7 +489,7 @@ class SUREEvaluator:
         
         hyp_lines = []
         for line in hyp_file_lines:
-            parts = line.strip().split('\t', 1)
+            parts = line.rstrip('\r\n').split('\t', 1)
             if len(parts) == 2:
                 key, text = parts
                 text_norm = asr_num2words(text, self.language, map_dir=map_dir, debug=False)
@@ -544,7 +554,7 @@ class SUREEvaluator:
             hyp_file_lines = handle.readlines()
 
         for line in ref_file_lines:
-            parts = line.strip().split('\t', 1)
+            parts = line.rstrip('\r\n').split('\t', 1)
             if len(parts) == 2:
                 key, text = parts
                 tokens = tokenize_codeswitch(text, proc_en, proc_zh)
@@ -554,7 +564,7 @@ class SUREEvaluator:
                 ref_en_lines.append(f"{key}\t{' '.join(en_tokens)}")
 
         for line in hyp_file_lines:
-            parts = line.strip().split('\t', 1)
+            parts = line.rstrip('\r\n').split('\t', 1)
             if len(parts) == 2:
                 key, text = parts
                 tokens = tokenize_codeswitch(text, proc_en, proc_zh)
@@ -721,14 +731,14 @@ class SUREEvaluator:
 
             with open(ref_processed.name, 'r', encoding='utf-8') as f:
                 for line in f:
-                    parts = line.strip().split('\t', 1)
+                    parts = line.rstrip('\r\n').split('\t', 1)
                     if len(parts) == 2:
                         key, ans = parts
                         ref_dict[key] = ans.strip().lower()
 
             with open(hyp_processed.name, 'r', encoding='utf-8') as f:
                 for line in f:
-                    parts = line.strip().split('\t', 1)
+                    parts = line.rstrip('\r\n').split('\t', 1)
                     if len(parts) == 2:
                         key, ans = parts
                         hyp_dict[key] = ans.strip().lower()

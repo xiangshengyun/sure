@@ -11,6 +11,7 @@
 | LID | [LID.md](LID.md) | spoken language identification、FireRedLID |
 | Speech Understanding | [SPEECH_UNDERSTANDING.md](SPEECH_UNDERSTANDING.md) | ASR、S2TT、SER、SLU、GR 多任务语音理解模型 |
 | SE | [SE.md](SE.md) | 单通道语音增强、降噪，带参考音频的评测 |
+| DOA | [DOA.md](DOA.md) | 声源方位估计，多通道阵列音频帧、输出 sources |
 | TTS | [TTS.md](TTS.md) | F5-TTS、IndexTTS-2、带音色参考的语音合成 |
 | TTA | [TTA.md](TTA.md) | 文本生成音频/音效,caption-only 输入 |
 | RIR | [RIR.md](RIR.md) | 房间脉冲响应估计,audio 输入、生成 rir_path |

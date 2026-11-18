@@ -32,7 +32,7 @@ from sure.site.gpu_partition import partition_environment
 from sure_eval.core.config import Config
 from sure_eval.core.logging import configure_logging, get_logger
 from sure_eval.datasets import DatasetManager
-from sure_eval.evaluation.rps import RPSManager
+from sure_eval.evaluation.rps import EvaluationRecord, RPSManager
 from sure_eval.evaluation.sure_evaluator import SUREEvaluator
 from sure_eval.reports import SOTAManager
 
@@ -2785,17 +2785,21 @@ def main() -> int:
                     raise ValueError("Judge results cannot be recorded against the legacy RPS baseline")
                 if not args.tool_name:
                     raise ValueError("--record requires --tool-name")
-                rps_manager.evaluate_and_record(
+                # Store the RPS this run reported; recalculating it would drop the source-name
+                # fallback and the engine's SOTA file.
+                rps_manager.database.add_record(EvaluationRecord(
                     tool_name=args.tool_name,
+                    model_name=None,
                     dataset=result["dataset"],
                     score=result["score"],
                     metric=result["metric"],
+                    rps=result.get("rps"),
                     metadata={
                         "num_samples": result["num_samples"],
                         "prediction_path": result["prediction_path"],
                         "details": result["details"],
                     },
-                )
+                ))
 
     payload = _to_strict_jsonable(
         _evaluation_payload_v2(

@@ -169,15 +169,21 @@ class SureSkillTests(unittest.TestCase):
         with self.clean_env():
             for name in WORKFLOWS:
                 with self.subTest(command=name):
-                    output = self.root / ('中文 "结果" \\ ' + name)
+                    # A double quote and a backslash are invalid in Windows names; the dry-run test covers them.
+                    output = self.root / (("中文 结果 " if os.name == "nt" else '中文 "结果" \\ ') + name)
                     result, code = runner.invoke(options(name, trust=True, output_dir=output), self.root)
                     self.assertEqual(code, 0, result)
                     self.assertEqual(result["status"], "success")
                     self.assertTrue((output / "result.json").is_file())
                     self.assertTrue((output / "artifacts/gate-observed.json").is_file())
-                    self.assertTrue(Path(result["artifacts_path"]).is_symlink())
-                    self.assertEqual(Path(result["artifacts_path"]).resolve(),
-                                     (Path(result["run_dir"]) / "artifacts").resolve())
+                    if "artifacts_path" in result:
+                        self.assertTrue(Path(result["artifacts_path"]).is_symlink())
+                        self.assertEqual(Path(result["artifacts_path"]).resolve(),
+                                         (Path(result["run_dir"]) / "artifacts").resolve())
+                    else:
+                        # Windows without symlink privilege: run.py records the failure
+                        # instead of making the link.
+                        self.assertIn("artifacts_link_error", result)
                     self.assertEqual(result["trace_summary"]["finish_repairs"], 1)
                     self.assertEqual(result["trace_summary"]["tool_calls"], 1)
                     self.assertTrue(Path(result["manifest_path_snapshot"]).is_file())

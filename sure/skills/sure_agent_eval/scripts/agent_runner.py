@@ -496,7 +496,9 @@ def run_agent(
                                             resolved = str(expected)
                                         value = resolved
                                         kind = "audio"
-                                        evidence_handles[str(stage["id"])].write(f"{key}\t{value}\n")
+                                        evidence_handles[str(stage["id"])].write(
+                                            f"{key}\t{value}\t{_sha256(Path(value))}\n"
+                                        )
                                     else:
                                         value = extract_text(answer)
                                         if not value:

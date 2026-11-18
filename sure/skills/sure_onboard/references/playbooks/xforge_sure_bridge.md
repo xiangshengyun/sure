@@ -12,8 +12,8 @@ It only converts XForge-style resource manifests into deterministic SURE
 artifacts.
 
 This playbook is not the SURE main-flow agent. Main evaluation orchestration
-lives in `docs/agents/main_flow_agent/AGENTS.md`; model onboarding/tool-agent behavior
-lives in `docs/agents/model_tool_agent/AGENTS.md`. The bridge only prepares selected
+lives in `docs/agents/main_flow_agent/AGENTS.md` in the sure-eval repo; model
+onboarding/tool-agent behavior lives in `sure/skills/sure_onboard/references/AGENTS.md`. The bridge only prepares selected
 ModelScope/XForge resources for those flows.
 
 ## Boundary
@@ -38,7 +38,7 @@ SURE remains responsible for validation and execution:
 
 - `scripts/prepare_sure_dataset.py`
 - prediction generation scripts
-- `docs/agents/model_tool_agent/AGENTS.md` model onboarding states
+- `sure/skills/sure_onboard/references/AGENTS.md` model onboarding states
 
 ## Daily ModelScope Watch Flow
 
@@ -536,7 +536,7 @@ tool-agent. It must point to:
 
 ```text
 target_agent: sure_model_tool_agent
-target_agent_contract: docs/agents/model_tool_agent/AGENTS.md
+target_agent_contract: sure/skills/sure_onboard/references/AGENTS.md
 requested_start_state: DOCKER_BUILD_CONFIRM
 sure_next_state_after_confirmation: BUILD_ENV
 requires_user_confirmation_before_build: true
@@ -682,7 +682,7 @@ scripts/evaluate_predictions.py
 
 For models, the canonical ModelScope chain writes
 `artifacts/tool_agent_request.json`, then the downstream SURE tool-agent follows
-`docs/agents/model_tool_agent/AGENTS.md`:
+`sure/skills/sure_onboard/references/AGENTS.md`:
 
 ```text
 DISCOVER

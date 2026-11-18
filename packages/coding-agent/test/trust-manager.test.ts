@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../src/core/trust-manager.ts";
+import { foreignAgentsSkillsAncestor } from "./ancestor-agents-skills.ts";
 
 describe("ProjectTrustStore", () => {
 	let tempDir: string;
@@ -36,7 +37,8 @@ describe("ProjectTrustStore", () => {
 		expect(store.get(childDir)).toBe(true);
 	});
 
-	it("detects trust-requiring project resources", () => {
+	// The assertions that expect false cannot hold when a real .agents/skills sits above the temp dir.
+	it.skipIf(foreignAgentsSkillsAncestor(tmpdir()))("detects trust-requiring project resources", () => {
 		const originalHome = process.env.HOME;
 		process.env.HOME = tempDir;
 		try {
@@ -63,5 +65,18 @@ describe("ProjectTrustStore", () => {
 				process.env.HOME = originalHome;
 			}
 		}
+	});
+
+	it("requires trust for project SURE skill packages", () => {
+		const projectSkillDir = join(cwd, ".sure", "skills", "x");
+		mkdirSync(projectSkillDir, { recursive: true });
+		writeFileSync(join(projectSkillDir, "sure.skill.json"), "{}");
+		expect(hasTrustRequiringProjectResources(cwd)).toBe(true);
+
+		const repositoryCwd = join(tempDir, "repository");
+		const repositorySkillDir = join(repositoryCwd, "sure", "skills", "x");
+		mkdirSync(repositorySkillDir, { recursive: true });
+		writeFileSync(join(repositorySkillDir, "sure.skill.json"), "{}");
+		expect(hasTrustRequiringProjectResources(repositoryCwd)).toBe(true);
 	});
 });

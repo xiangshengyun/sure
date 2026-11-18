@@ -1,6 +1,6 @@
 # KWS Model Onboarding Playbook
 
-本文是 `docs/agents/model_tool_agent/AGENTS.md` 的 KWS 任务补充，基于
+本文是 `sure/skills/sure_onboard/references/AGENTS.md` 的 KWS 任务补充，基于
 `daydream_factory__keyword-spot-fsmn-ctc-wenwen` 和 WekWS 的接入经验。
 
 ## 1. 任务边界

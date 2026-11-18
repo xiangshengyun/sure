@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const root = process.cwd();
 const checks = [];
@@ -332,6 +333,76 @@ if (engineOverride) {
 		} else {
 			pass("sure-evaluation submodule", `${locationDetail} @ ${commitDetail}`);
 		}
+	}
+}
+
+// --- runtime materialization ---------------------------------------------------------
+//
+// Every skill and /sure_eval need a materialized runtime, and "not materialized" is the
+// most common reason a correct command fails while the doctor reports nothing. Both
+// runtimes name their directory after a hash of their lock file, so the check rebuilds
+// the id from the spec and the current lock, then looks for that directory. A lock change
+// moves the id — exactly the case where the old directory is stale and a rebuild is due.
+
+function sha256File(path) {
+	return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function runtimeId(kind, spec, lockSha) {
+	const python = String(spec.python ?? "3.11").replaceAll(".", "");
+	if (kind === "harness") {
+		// bootstrap.py refuses a harness spec without these two, so surface the gap here
+		// instead of building an id carrying "undefined".
+		if (!spec.harness_version || !spec.materialization_version) return null;
+		return `sure-harness-${spec.harness_version}-m${spec.materialization_version}-py${python}-${lockSha.slice(0, 12)}`;
+	}
+	const commit = String(spec.engine_commit ?? "").slice(0, 12);
+	// evaluation_runtime.py defaults these two the same way; match it exactly.
+	return `sure-evaluation-${spec.runtime_version ?? "root-v1"}-m${spec.materialization_version ?? 1}-${commit}-py${python}-${lockSha.slice(0, 12)}`;
+}
+
+for (const runtime of [
+	{
+		label: "harness runtime",
+		spec: "sure/runtime/harness/runtime.json",
+		dir: "sure/.runtime/harness",
+		kind: "harness",
+		prepare: "uv run --no-project --python 3.11 sure/runtime/harness/bootstrap.py --json",
+	},
+	{
+		label: "evaluation runtime",
+		spec: "sure/runtime/evaluation/runtime.json",
+		dir: "sure/.runtime/evaluation",
+		kind: "evaluation",
+		prepare:
+			"python3 sure/skills/sure_infer/scripts/evaluation_runtime.py --engine-root sure/external/sure-evaluation --prepare",
+		prepareNote:
+			"Preparing by hand needs a bound Harness Runtime first (any Sure run binds one); see docs/evaluation_engine.md.",
+	},
+]) {
+	const specPath = join(root, runtime.spec);
+	const spec = readJson(specPath);
+	if (!spec) {
+		warn(runtime.label, `${runtime.spec} is missing`);
+		continue;
+	}
+	const lockPath = join(dirname(specPath), String(spec.lock_file ?? "requirements.lock.txt"));
+	if (!existsSync(lockPath)) {
+		warn(runtime.label, `lock file is missing: ${lockPath}`);
+		continue;
+	}
+	const id = runtimeId(runtime.kind, spec, sha256File(lockPath));
+	if (!id) {
+		warn(runtime.label, `${runtime.spec} must declare harness_version and materialization_version`);
+		continue;
+	}
+	if (existsSync(join(root, runtime.dir, id, "runtime-manifest.json"))) {
+		pass(runtime.label, `${id} is materialized`);
+	} else {
+		warn(
+			runtime.label,
+			`${id} is not materialized; the first Sure run prepares it.${runtime.prepareNote ? ` ${runtime.prepareNote}` : ""} To prepare now: ${runtime.prepare}`,
+		);
 	}
 }
 

@@ -1,0 +1,43 @@
+name: Contribution Proposal
+description: Propose a change or feature (required for new contributors before submitting a PR)
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before you start:** read [CONTRIBUTING.md](https://github.com/X-LANCE/sure/blob/harness-tui-agent/CONTRIBUTING.md).
+
+        New issues from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. Issues that do not meet the quality bar in CONTRIBUTING.md will not be reopened or receive a reply.
+
+        Keep this short. If it does not fit on one screen, it is too long. Write in your own voice.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What do you want to change?
+      description: Be specific and concise.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: What problem does this solve, and who is blocked without it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: how
+    attributes:
+      label: How? (optional)
+      description: A brief technical approach, if you have one in mind.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: implement
+    attributes:
+      label: Implementation
+      options:
+        - label: I want to implement this myself.

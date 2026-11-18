@@ -1,6 +1,6 @@
 # VC Model Onboarding Playbook
 
-本文是 `docs/agents/model_tool_agent/AGENTS.md` 的 VC 任务补充，基于
+本文是 `sure/skills/sure_onboard/references/AGENTS.md` 的 VC 任务补充，基于
 `Plachtaa__seed-vc` 的接入经验。
 
 ## 1. 任务边界

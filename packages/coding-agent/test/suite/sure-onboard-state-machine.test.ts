@@ -24,14 +24,18 @@ import {
 } from "../../../../sure/skills/sure_onboard/hooks/state-machine.ts";
 import { validateProduces } from "../../../../sure/skills/sure_onboard/hooks/validate.ts";
 import type { SureHookContext } from "../../src/core/sure/types.ts";
+import { harnessPythonOr } from "./harness-python.ts";
 
 // sure_onboard skill package root (repo-relative from the test file).
 const PACKAGE_DIR = resolve(__dirname, "../../../../sure/skills/sure_onboard");
+// Scripts that import yaml (materialize_onboard_inputs.py, check_package_gate.py) run on the Harness Runtime python.
+const harnessPython = () => harnessPythonOr(PACKAGE_DIR, "python3");
 
 type StatePatchForTest = {
 	message?: string;
 	diagnostics?: Array<{ message: string }>;
 	phase?: { status?: string };
+	counters?: { gate_blocks?: number };
 	checkpoint?: { data: CheckpointData };
 };
 
@@ -854,7 +858,7 @@ describe("sure_onboard MODEL_INPUT materializer", () => {
 		writeModelInput(modelInputPath);
 
 		const proc = spawnSync(
-			"python3",
+			harnessPython(),
 			[
 				join(PACKAGE_DIR, "scripts", "materialize_onboard_inputs.py"),
 				"--model-input-path",
@@ -924,7 +928,7 @@ describe("sure_onboard MODEL_INPUT materializer", () => {
 			"utf-8",
 		);
 		const proc = spawnSync(
-			"python3",
+			harnessPython(),
 			[
 				join(PACKAGE_DIR, "scripts", "materialize_onboard_inputs.py"),
 				"--model-input-path",
@@ -964,7 +968,7 @@ describe("sure_onboard MODEL_INPUT materializer", () => {
 		it.skipIf(!existsSync(modelInputPath))(`materializes generated Qwen handoff ${modelName}`, () => {
 			const { ctx, cwd, runDir } = preStartCtx(`materialize-${modelName}`, "");
 			const proc = spawnSync(
-				"python3",
+				harnessPython(),
 				[
 					join(PACKAGE_DIR, "scripts", "materialize_onboard_inputs.py"),
 					"--model-input-path",
@@ -1050,7 +1054,7 @@ describe("sure_onboard end-to-end state-machine replay", () => {
 		expect(start.ok).toBe(true);
 
 		const materialize = spawnSync(
-			"python3",
+			harnessPython(),
 			[
 				join(PACKAGE_DIR, "scripts", "materialize_onboard_inputs.py"),
 				"--model-input-path",
@@ -1252,7 +1256,7 @@ describe("sure_onboard end-to-end state-machine replay", () => {
 			failures: [],
 		});
 		const modelRuntime = spawnSync(
-			"python3",
+			harnessPython(),
 			[
 				join(PACKAGE_DIR, "scripts", "materialize_model_runtime.py"),
 				"--run-dir",
@@ -1443,7 +1447,7 @@ describe("sure_onboard end-to-end state-machine replay", () => {
 		advance("write_runtime_inventory");
 
 		const inventory = spawnSync(
-			"python3",
+			harnessPython(),
 			[
 				join(PACKAGE_DIR, "scripts", "write_runtime_inventory.py"),
 				"--run-dir",
@@ -1504,7 +1508,7 @@ describe("sure_onboard end-to-end state-machine replay", () => {
 		});
 		advance("finalize_model_bundle");
 		const finalize = spawnSync(
-			"python3",
+			harnessPython(),
 			[
 				join(PACKAGE_DIR, "scripts", "finalize_model_bundle.py"),
 				"--run-dir",
@@ -1524,6 +1528,8 @@ describe("sure_onboard end-to-end state-machine replay", () => {
 		});
 		const terminal = advance("finalize_model_bundle");
 		expect(terminal.completedUnits).toContain("finalize_model_bundle");
+		// two gates blocked earlier in the run and then passed: advance() cleared their retries
+		seedCheckpoint(runDir, { ...terminal, blocks: 2 });
 
 		ctx.point = "pre_finish";
 		ctx.event = { finish: { status: "success" } } as never;
@@ -1531,6 +1537,7 @@ describe("sure_onboard end-to-end state-machine replay", () => {
 		const patch = statePatch(finish);
 		expect(finish.ok, finish.repair).toBe(true);
 		expect(patch.phase?.status).toBe("success");
+		expect(patch.counters?.gate_blocks).toBe(2);
 		// Real work throughout: 4 python3 gate-script runs including the uv seal, plus
 		// 23 state transitions validating artifacts on disk. 6.7s idle here, 41.8s
 		// with the whole suite running; 120s keeps a 3x margin on the loaded figure.
@@ -3069,7 +3076,7 @@ describe("sure_onboard artifact manifest structure compatibility", () => {
 			expect(gate.status, gate.stderr || gate.stdout).toBe(0);
 		}
 		const packageGate = spawnSync(
-			"python3",
+			harnessPython(),
 			[
 				join(PACKAGE_DIR, "scripts", "check_package_gate.py"),
 				"--run-dir",

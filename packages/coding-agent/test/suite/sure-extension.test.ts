@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Worker } from "node:worker_threads";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1113,6 +1114,23 @@ describe("Sure extension", () => {
 		expect(readRunEvents(harness.tempDir, runId).some((event) => event.type === "resumed")).toBe(false);
 	});
 
+	it("does not claim to continue a run the user interrupted", async () => {
+		const notifications: Array<{ message: string; type: string | undefined }> = [];
+		const harness = await createSureHarness({
+			uiContext: createNotifyCapturingUiContext((message, type) => notifications.push({ message, type })),
+		});
+		cleanups.push(harness.cleanup);
+		setupSkillPackage(harness.tempDir);
+
+		harness.setResponses([fauxAssistantMessage("interrupted", { stopReason: "aborted" })]);
+
+		await harness.session.prompt("/sure_feed topic");
+		await harness.session.agent.waitForIdle();
+
+		expect(getUserTexts(harness)).toHaveLength(1);
+		expect(notifications.some((entry) => entry.message.includes("continuing automatically"))).toBe(false);
+	});
+
 	it("resumes an explicitly named cancelled run with a rejected finish without rerunning completed work", async () => {
 		const harness = await createSureHarness();
 		cleanups.push(harness.cleanup);
@@ -1191,6 +1209,64 @@ describe("Sure extension", () => {
 		const run = JSON.parse(readFileSync(join(runDir, "run.json"), "utf-8"));
 		expect(run.status).toBe("failed");
 		expect(readdirSync(join(harness.tempDir, ".sure", "runs")).length).toBe(1);
+		expect(readRunEvents(harness.tempDir, runId).some((event) => event.type === "resumed")).toBe(true);
+	});
+
+	// Windows paths are case-insensitive: `cd d:\proj` and `cd D:\proj` are the same project.
+	it.skipIf(process.platform !== "win32")(
+		"resumes a run recorded under a differently cased cwd on Windows",
+		async () => {
+			const harness = await createSureHarness();
+			cleanups.push(harness.cleanup);
+			setupSkillPackage(harness.tempDir);
+
+			harness.setResponses([fauxAssistantMessage("stopping short of the manifest")]);
+			await harness.session.prompt("/sure_feed topic");
+			await harness.session.agent.waitForIdle();
+
+			const runId = getOnlyRunId(harness.tempDir);
+			const runDir = join(harness.tempDir, ".sure", "runs", runId);
+			writeJson(join(runDir, "state.json"), {
+				checkpoint: { id: "main_flow", resumable: true, resume_hint: "Start at unit two." },
+			});
+			await emitSessionShutdownEvent(harness.session.extensionRunner, { type: "session_shutdown", reason: "quit" });
+			const previous = JSON.parse(readFileSync(join(runDir, "run.json"), "utf-8"));
+			writeJson(join(runDir, "run.json"), { ...previous, cwd: previous.cwd.toUpperCase() });
+
+			harness.setResponses([fauxAssistantMessage("back at it")]);
+			await harness.session.prompt("/sure_resume");
+			await harness.session.agent.waitForIdle();
+
+			expect(readRunEvents(harness.tempDir, runId).some((event) => event.type === "resumed")).toBe(true);
+		},
+	);
+
+	it("skips a run record without a cwd when looking for a run to resume", async () => {
+		const harness = await createSureHarness();
+		cleanups.push(harness.cleanup);
+		setupSkillPackage(harness.tempDir);
+
+		harness.setResponses([fauxAssistantMessage("stopping short of the manifest")]);
+		await harness.session.prompt("/sure_feed topic");
+		await harness.session.agent.waitForIdle();
+
+		const runId = getOnlyRunId(harness.tempDir);
+		const runDir = join(harness.tempDir, ".sure", "runs", runId);
+		writeJson(join(runDir, "state.json"), {
+			checkpoint: { id: "main_flow", resumable: true, resume_hint: "Start at unit two." },
+		});
+		await emitSessionShutdownEvent(harness.session.extensionRunner, { type: "session_shutdown", reason: "quit" });
+		// A newer, half-written record: it sorts first and has no cwd.
+		const brokenDir = join(harness.tempDir, ".sure", "runs", `${runId}-zz`);
+		mkdirSync(brokenDir, { recursive: true });
+		const previous = JSON.parse(readFileSync(join(runDir, "run.json"), "utf-8"));
+		const { cwd: _cwd, ...withoutCwd } = previous;
+		writeJson(join(brokenDir, "run.json"), { ...withoutCwd, runId: `${runId}-zz`, runDir: brokenDir });
+
+		harness.setResponses([fauxAssistantMessage("back at it")]);
+		await harness.session.prompt("/sure_resume");
+		await harness.session.agent.waitForIdle();
+
 		expect(readRunEvents(harness.tempDir, runId).some((event) => event.type === "resumed")).toBe(true);
 	});
 
@@ -1548,6 +1624,118 @@ describe("Sure extension", () => {
 		);
 	});
 
+	it("rejects a same-named file from an earlier run as a required artifact", async () => {
+		const harness = await createSureHarness();
+		cleanups.push(harness.cleanup);
+		setupSkillPackage(harness.tempDir, {
+			artifacts: [{ type: "report", path: "report.md", required: true }],
+		});
+		mkdirSync(join(harness.tempDir, "out", "previous"), { recursive: true });
+		writeFileSync(join(harness.tempDir, "out", "previous", "report.md"), "# Earlier run\n");
+
+		harness.setResponses([
+			() => {
+				const runId = getOnlyRunId(harness.tempDir);
+				writeValidManifest(harness.tempDir, runId, {
+					artifacts: [{ type: "report", path: "out/previous/report.md" }],
+				});
+				return fauxAssistantMessage(
+					fauxToolCall("sure_finish", {
+						status: "success",
+						manifest_path: `.sure/runs/${runId}/manifest.json`,
+						summary: "done",
+					}),
+				);
+			},
+			fauxAssistantMessage("repairing"),
+		]);
+
+		await harness.session.prompt("/sure_feed topic");
+		await harness.session.agent.waitForIdle();
+		await waitForCondition(() => harness.session.messages.some((message) => message.role === "toolResult"));
+
+		const toolResult = harness.session.messages.find((message) => message.role === "toolResult");
+		expect(toolResult && "content" in toolResult ? JSON.stringify(toolResult.content) : "").toContain(
+			"missing required artifact",
+		);
+	});
+
+	it("rejects a same-named file an earlier run left in a reused output_dir", async () => {
+		const harness = await createSureHarness();
+		cleanups.push(harness.cleanup);
+		setupSkillPackage(harness.tempDir, {
+			artifacts: [{ type: "report", path: "report.md", required: true }],
+		});
+		writeSitePolicy(harness.tempDir);
+		const outputDir = mkdtempSync(join(tmpdir(), "sure-artifact-output-"));
+		cleanups.push(() => rmSync(outputDir, { recursive: true, force: true }));
+		const earlierReport = join(outputDir, "report.md");
+		writeFileSync(earlierReport, "# Earlier run\n");
+
+		harness.setResponses([
+			() => {
+				const runId = getOnlyRunId(harness.tempDir);
+				writeValidManifest(harness.tempDir, runId, {
+					artifacts: [{ type: "report", path: earlierReport }],
+				});
+				return fauxAssistantMessage(
+					fauxToolCall("sure_finish", {
+						status: "success",
+						manifest_path: `.sure/runs/${runId}/manifest.json`,
+						summary: "done",
+					}),
+				);
+			},
+			fauxAssistantMessage("repairing"),
+		]);
+
+		await harness.session.prompt(`/sure_feed topic output_dir=${outputDir}`);
+		await harness.session.agent.waitForIdle();
+		await waitForCondition(() => harness.session.messages.some((message) => message.role === "toolResult"));
+
+		const toolResult = harness.session.messages.find((message) => message.role === "toolResult");
+		expect(toolResult && "content" in toolResult ? JSON.stringify(toolResult.content) : "").toContain(
+			"missing required artifact",
+		);
+	});
+
+	it("accepts a same-named required artifact written inside the run directory", async () => {
+		const harness = await createSureHarness();
+		cleanups.push(harness.cleanup);
+		setupSkillPackage(harness.tempDir, {
+			artifacts: [{ type: "report", path: "report.md", required: true }],
+		});
+
+		harness.setResponses([
+			() => {
+				const runId = getOnlyRunId(harness.tempDir);
+				const runReport = join(harness.tempDir, ".sure", "runs", runId, "artifacts", "report.md");
+				mkdirSync(join(runReport, ".."), { recursive: true });
+				writeFileSync(runReport, "# This run\n");
+				writeValidManifest(harness.tempDir, runId, {
+					artifacts: [{ type: "report", path: `.sure/runs/${runId}/artifacts/report.md` }],
+				});
+				return fauxAssistantMessage(
+					fauxToolCall("sure_finish", {
+						status: "success",
+						manifest_path: `.sure/runs/${runId}/manifest.json`,
+						summary: "done",
+					}),
+				);
+			},
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("/sure_feed topic");
+		await harness.session.agent.waitForIdle();
+		await waitForCondition(() => harness.session.messages.some((message) => message.role === "toolResult"));
+
+		const toolResult = harness.session.messages.find((message) => message.role === "toolResult");
+		expect(toolResult && "content" in toolResult ? JSON.stringify(toolResult.content) : "").toContain(
+			"finished with status success",
+		);
+	});
+
 	it("rejects required artifact declarations without a path", async () => {
 		const harness = await createSureHarness();
 		cleanups.push(harness.cleanup);
@@ -1654,7 +1842,9 @@ describe("Sure extension", () => {
 		expect(run.status).toBe("failed");
 		expect(
 			readRunEvents(harness.tempDir, runId).some(
-				(event) => event.type === "finish_repair" && JSON.stringify(event.data).includes(outsidePath),
+				(event) =>
+					event.type === "finish_repair" &&
+					JSON.stringify(event.data).includes(JSON.stringify(outsidePath).slice(1, -1)),
 			),
 		).toBe(true);
 	});
@@ -1698,7 +1888,9 @@ describe("Sure extension", () => {
 		expect(run.status).toBe("failed");
 		expect(
 			readRunEvents(harness.tempDir, runId).some(
-				(event) => event.type === "finish_repair" && JSON.stringify(event.data).includes(symlinkPath),
+				(event) =>
+					event.type === "finish_repair" &&
+					JSON.stringify(event.data).includes(JSON.stringify(symlinkPath).slice(1, -1)),
 			),
 		).toBe(true);
 	});
@@ -1766,6 +1958,38 @@ describe("Sure extension", () => {
 		expect(
 			readRunEvents(harness.tempDir, getOnlyRunId(harness.tempDir)).some((event) => event.type === "finish_repair"),
 		).toBe(true);
+	});
+
+	it("stops the hook worker once the run ends", async () => {
+		const harness = await createSureHarness();
+		cleanups.push(harness.cleanup);
+		setupSkillPackage(harness.tempDir, {
+			hook: `export function preFinish() { return { ok: true }; }`,
+		});
+		const terminate = vi.spyOn(Worker.prototype, "terminate");
+		cleanups.push(() => terminate.mockRestore());
+
+		harness.setResponses([
+			() => {
+				const runId = getOnlyRunId(harness.tempDir);
+				writeValidManifest(harness.tempDir, runId);
+				return fauxAssistantMessage(
+					fauxToolCall("sure_finish", {
+						status: "success",
+						manifest_path: `.sure/runs/${runId}/manifest.json`,
+						summary: "done",
+					}),
+				);
+			},
+		]);
+
+		await harness.session.prompt("/sure_feed topic");
+		await harness.session.agent.waitForIdle();
+		await waitForCondition(() => harness.session.messages.some((message) => message.role === "toolResult"));
+
+		const toolResult = harness.session.messages.find((message) => message.role === "toolResult");
+		expect(toolResult && "content" in toolResult ? JSON.stringify(toolResult.content) : "").toContain("finished");
+		expect(terminate).toHaveBeenCalledTimes(1);
 	});
 
 	it("skips duplicate and unknown skill commands during discovery", async () => {

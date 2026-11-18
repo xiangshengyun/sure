@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import type { SureHookContext, SureHookResult } from "@earendil-works/pi-coding-agent/hooks";
 import { harnessRuntimeEnv, resolveHarnessPython } from "../../../runtime/harness/resolve.ts";
+import { splitArgs } from "../../../runtime/memory/hooks.ts";
 import { invokedSkillScripts } from "../../../runtime/script-guard.ts";
 import {
 	advance,
@@ -18,17 +20,17 @@ import { readArtifact, validateProduces } from "./validate.ts";
 
 function parseArgs(raw: string): Record<string, string> {
 	const output: Record<string, string> = {};
-	const tokens = raw.trim().split(/\s+/).filter(Boolean);
+	const tokens = splitArgs(raw).map((token) => token.value);
 	for (let index = 0; index < tokens.length; index += 1) {
 		const token = tokens[index];
 		const equal = token.indexOf("=");
 		if (equal >= 0) {
-			output[token.slice(0, equal)] = token.slice(equal + 1);
+			output[token.slice(0, equal).replace(/^--?/, "")] = token.slice(equal + 1);
 			continue;
 		}
 		const key = token.replace(/^--?/, "");
 		const next = tokens[index + 1];
-		if (next && !next.startsWith("-")) {
+		if (next !== undefined && !next.startsWith("-")) {
 			output[key] = next;
 			index += 1;
 		} else {
@@ -209,6 +211,33 @@ function checkBackend(ctx: SureHookContext, script: string, produces: string, ex
 		: result.stderr.trim() || result.stdout.trim() || `${script} rejected ${produces}.`;
 }
 
+// Same resolution as approval_core.py: `~` expanded, relative to the invocation
+// cwd, symlinks and Windows short names resolved.
+function canonicalPath(cwd: string, raw: string): string {
+	const path = resolve(cwd, raw.replace(/^~(?=$|[\\/])/, homedir()));
+	try {
+		return realpathSync.native(path);
+	} catch {
+		return path;
+	}
+}
+
+// The decision gate script takes its decision and packet from the agent, so the
+// hook holds the result to what the user put on the command line.
+function unboundDecision(ctx: SureHookContext, artifact: Record<string, unknown>): string | undefined {
+	const args = parseArgs(ctx.args);
+	if (artifact.decision !== args.decision)
+		return `approval_decision.json records decision=${String(artifact.decision)}, but the user supplied decision=${args.decision}. Rerun scripts/verify_human_decision.py with --decision ${args.decision}.`;
+	const reviewManifest = canonicalPath(ctx.cwd, args.review_manifest ?? "");
+	if (
+		typeof artifact.review_packet !== "string" ||
+		!args.review_manifest ||
+		canonicalPath(ctx.cwd, artifact.review_packet) !== reviewManifest
+	)
+		return `approval_decision.json is bound to review packet ${String(artifact.review_packet)}, not the review_manifest the user supplied (${reviewManifest}). Rerun scripts/verify_human_decision.py with --review-manifest ${reviewManifest}.`;
+	return undefined;
+}
+
 export function postToolResult(ctx: SureHookContext): SureHookResult {
 	const mode = modeFromArgs(ctx.args);
 	const checkpoint = readCheckpoint(ctx, mode);
@@ -218,6 +247,9 @@ export function postToolResult(ctx: SureHookContext): SureHookResult {
 	if (artifact === undefined) return { ok: true };
 	const invalid = validateProduces(unit, artifact);
 	if (invalid) return failOrRetry(ctx, checkpoint, artifact, invalid);
+	const unbound =
+		unit.id === "verify_decision" ? unboundDecision(ctx, artifact as Record<string, unknown>) : undefined;
+	if (unbound) return failOrRetry(ctx, checkpoint, artifact, unbound);
 	const produces = join(ctx.runDir, "artifacts", unit.produces);
 	const rejected = checkBackend(ctx, unit.gateScript, produces, unit.gateScriptArgs ?? []);
 	if (rejected) return failOrRetry(ctx, checkpoint, artifact, rejected);

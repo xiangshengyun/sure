@@ -331,9 +331,11 @@ class RunAgentTests(unittest.TestCase):
             self.assertRegex(row[1], rf"^TRANSLATED:TRANSCRIBED:{stem}-[0-9a-f]{{8}}$")
         evidence = (self.product_dir / "enhanced" / "denoise" / "mini_s2tt__unversioned.tsv").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(evidence), 2)
-        key, path = evidence[0].split("\t")
+        key, path, digest = evidence[0].split("\t")
         self.assertEqual(key, "utt0")
         self.assertTrue(Path(path).is_file())
+        # The third column is the digest of the snapshot, so a later file swap is detectable.
+        self.assertEqual(digest, agent_runner._sha256(Path(path)))
         # The ignoring wrapper wrote under its own model dir; the runner must
         # snapshot it into the product dir under a key-unique name.
         self.assertTrue(str((self.product_dir / "enhanced" / "denoise").resolve()) in str(Path(path).resolve()))
@@ -352,7 +354,7 @@ class RunAgentTests(unittest.TestCase):
 
         result = agent_runner.run_agent(spec, self.run_dir, mcp_caller_factory=factory, api_caller=self.stub_api_caller)
         self.assertEqual(result["job_status"], "succeeded", result.get("error"))
-        _, path = (self.product_dir / "enhanced" / "denoise" / "mini_s2tt__unversioned.tsv").read_text(encoding="utf-8").splitlines()[0].split("\t")
+        _, path, _digest = (self.product_dir / "enhanced" / "denoise" / "mini_s2tt__unversioned.tsv").read_text(encoding="utf-8").splitlines()[0].split("\t")
         # Compare resolved paths: Windows may hand back the same directory under
         # an 8.3 short name while the evidence row carries the long spelling.
         self.assertTrue(str((self.product_dir / "enhanced" / "denoise").resolve()) in str(Path(path).resolve()))
@@ -418,9 +420,10 @@ class RunAgentTests(unittest.TestCase):
         evidence = (self.product_dir / "enhanced" / "denoise" / "shared_stem.tsv").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(evidence), 2)
         pairs = [tuple(line.split("\t")) for line in evidence]
-        self.assertEqual(len({path for _, path in pairs}), 2, "each sample must keep its own evidence file")
-        for key, path in pairs:
+        self.assertEqual(len({pair[1] for pair in pairs}), 2, "each sample must keep its own evidence file")
+        for key, path, digest in pairs:
             self.assertTrue(Path(path).is_file())
+            self.assertEqual(digest, agent_runner._sha256(Path(path)))
             expected_source = sub1 if key == "sample_a" else sub2
             self.assertIn(str(expected_source).encode(), Path(path).read_bytes())
 

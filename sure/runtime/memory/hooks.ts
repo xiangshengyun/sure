@@ -296,13 +296,14 @@ interface ArgToken {
 }
 
 /** Split on whitespace, but a double-quoted run stays one argument. */
-function splitArgs(args: string): ArgToken[] {
+export function splitArgs(args: string): ArgToken[] {
 	const tokens: ArgToken[] = [];
 	let value = "";
 	let start = -1;
 	let inQuote = false;
 	const flush = (end: number): void => {
-		if (value) {
+		// start is set by a quote too, so an explicit "" stays an (empty) argument
+		if (start >= 0) {
 			tokens.push({ value, source: args.slice(start, end) });
 		}
 		value = "";
@@ -341,7 +342,7 @@ export function stripOutputDir(args: string): string {
 		const token = tokens[i];
 		const eq = token.value.indexOf("=");
 		if (eq >= 0) {
-			if (token.value.slice(0, eq) !== "output_dir") {
+			if (token.value.slice(0, eq).replace(/^--?/, "") !== "output_dir") {
 				rest.push(token.source);
 			}
 			continue;

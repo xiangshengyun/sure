@@ -1,0 +1,45 @@
+name: Bug Report
+description: Report something in SURE Harness that is broken
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before you start:** read [CONTRIBUTING.md](https://github.com/X-LANCE/sure/blob/harness-tui-agent/CONTRIBUTING.md).
+
+        New issues from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. Issues that do not meet the quality bar in CONTRIBUTING.md will not be reopened or receive a reply.
+
+        Keep this short. If it does not fit on one screen, it is too long. Write in your own voice.
+
+        **First:** run `npm run sure:doctor` and include what it reports. It covers most environment-level failures, and a report that skips it usually comes back with that request.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Be specific. Include the exact command and the error text.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The minimal command sequence that triggers it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The commit you are on (`git rev-parse --short HEAD`) and your OS.
+    validations:
+      required: false

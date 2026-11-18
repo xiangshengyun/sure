@@ -1,6 +1,6 @@
 # ASR / Streaming ASR Model Onboarding Playbook
 
-本文是 `docs/agents/model_tool_agent/AGENTS.md` 的 ASR 任务补充。新 agent 接入 ASR
+本文是 `sure/skills/sure_onboard/references/AGENTS.md` 的 ASR 任务补充。新 agent 接入 ASR
 模型时必须先读总规范，再读本文。本文覆盖普通离线 ASR 和流式 ASR，例如
 `GilgameshWind__X-ASR-zh-en`。
 

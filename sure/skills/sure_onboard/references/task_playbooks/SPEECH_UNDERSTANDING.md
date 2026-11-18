@@ -1,6 +1,6 @@
 # Speech Understanding Multitask Onboarding Playbook
 
-本文是 `docs/agents/model_tool_agent/AGENTS.md` 的语音理解多任务补充，基于
+本文是 `sure/skills/sure_onboard/references/AGENTS.md` 的语音理解多任务补充，基于
 `asr_kimi_audio` / Kimi-Audio-7B-Instruct 的接入经验。适用任务：
 
 ```text

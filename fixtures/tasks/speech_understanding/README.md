@@ -73,6 +73,6 @@ Record task-specific expected fields in `model.spec.yaml.io_contract` and
 
 ## Related Tool-Agent Memory
 
-- `docs/agents/model_tool_agent/task_playbooks/SPEECH_UNDERSTANDING.md`
-- `docs/agents/model_tool_agent/contracts/fixture_policy.md`
-- `docs/agents/model_tool_agent/contracts/minimal_validation.md`
+- `sure/skills/sure_onboard/references/task_playbooks/SPEECH_UNDERSTANDING.md`
+- `sure/skills/sure_onboard/references/contracts/fixture_policy.md`
+- `sure/skills/sure_onboard/references/contracts/minimal_validation.md`

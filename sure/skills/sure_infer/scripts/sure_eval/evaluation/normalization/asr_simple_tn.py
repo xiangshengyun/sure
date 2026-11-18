@@ -42,7 +42,8 @@ def get_n2w_map(map_file, language=None):
     with open(map_file, 'r', encoding='utf-8') as fm:
         for line in fm:
             line = re.sub(r'\s+', ' ', line.strip()) # 忽略多余的空格和tab
-            line = line.split('#', 1)[0] # 删除#开头的注释
+            if line.startswith('#') and not re.match(r'#\s*\|', line): # 以#开头的整行是注释；"# | x" 是 # 本身的规则
+                continue
             if (len(line) == 0): # empty line
                 continue
             line2 = line.split('|') # 优先以'|'分割
@@ -106,7 +107,7 @@ def preprocess_zh_text(text):
     
     # 匹配中文数字的逐位读法（如"一零"、"一五"、"二零"等）
     # 只匹配2位中文数字，避免匹配更长或更短的
-    text = re.sub(r'([一二三四五六七八九零])([一二三四五六七八九零])', normalize_chinese_digits, text)
+    text = re.sub(r'(?<![一二三四五六七八九零〇])([一二三四五六七八九零])([一二三四五六七八九零])(?![一二三四五六七八九零〇])', normalize_chinese_digits, text)
     
     # 2. Decomposed Units (NFKC artifacts): ℃ -> °C, ㎡ -> m2
     text = re.sub(r'°\s*C', '摄氏度', text)
@@ -268,6 +269,8 @@ def asr_num2words(
         # fallback: 兼容老接口
         pairs = []
         map_files = glob.glob(os.path.join(map_dir, "*.map"))
+        # map_dir may be the rules root, whose rules sit under the base language (zh_CN -> zh)
+        map_files += glob.glob(os.path.join(map_dir, language.split('_')[0], "*.map"))
         for mf in map_files:
             if os.path.basename(mf) != "digit.map":
                 pairs.extend(load_and_sort_map(mf, language))
@@ -333,7 +336,7 @@ def asr_num2words(
         num = num.rstrip('.') # 删除末尾的点号
 
         # 特殊兜底的数字映射：长度大于4的，或0开头的数字串通常按0-9发音
-        if ((len(num) < normalize_digit_maxlen and len(num) > 4 and num.isdigit() and (10 ** (len(num)-1) != int(num))) or num[0] == '0') and len(n2w_map_sorted) > 0:
+        if ((len(num) < normalize_digit_maxlen and len(num) > 4 and num.isdigit() and (10 ** (len(num)-1) != int(num))) or (num[0] == '0' and num.isdigit())) and len(n2w_map_sorted) > 0:
             if len(num) > normalize_digit_maxlen:
                 if debug or len(num) > 12:
                     logger.warning(f"number length > threshold {normalize_digit_maxlen}, failed to convert \"{num}\"")

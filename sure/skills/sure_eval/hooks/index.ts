@@ -25,6 +25,7 @@ import {
 	safeGateDigest,
 	settleOnPass,
 	settleOnTerminalFailure,
+	splitArgs,
 	stripOutputDir,
 } from "../../../runtime/memory/hooks.ts";
 import { invokedSkillScripts } from "../../../runtime/script-guard.ts";
@@ -122,12 +123,12 @@ function prepareEvaluationRuntime(
 function parseArgs(raw: string): Record<string, string> {
 	// Accept both "key value" and "key=value" forms, plus bare flags.
 	const out: Record<string, string> = {};
-	const tokens = raw.trim().split(/\s+/).filter(Boolean);
+	const tokens = splitArgs(raw).map((token) => token.value);
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i];
 		const eq = token.indexOf("=");
 		if (eq >= 0) {
-			out[token.slice(0, eq)] = token.slice(eq + 1);
+			out[token.slice(0, eq).replace(/^--?/, "")] = token.slice(eq + 1);
 			continue;
 		}
 		const key = token.replace(/^--?/, "");
@@ -265,6 +266,7 @@ export function materializeDatasetScope(ctx: SureHookContext): GateResult {
 		!isRecord(decision) ||
 		!Array.isArray(decision.selected_datasets) ||
 		decision.selected_datasets.length !== sourceDatasets.length ||
+		new Set(decision.selected_datasets).size !== sourceDatasets.length ||
 		!decision.selected_datasets.every((dataset) => typeof dataset === "string" && sourceDatasets.includes(dataset)) ||
 		!Array.isArray(decision.skipped_datasets) ||
 		decision.skipped_datasets.length !== 0
@@ -1086,6 +1088,7 @@ export function preFinish(ctx: SureHookContext): SureHookResult {
 						? checkpoint.data.completedUnits
 						: [...checkpoint.data.completedUnits, LAST_UNIT.id],
 					retries: checkpoint.data.retries,
+					blocks: checkpoint.data.blocks,
 					failedArtifactDigests: checkpoint.data.failedArtifactDigests,
 					memory,
 				},

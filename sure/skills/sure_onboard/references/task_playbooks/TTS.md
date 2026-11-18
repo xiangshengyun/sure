@@ -1,6 +1,6 @@
 # TTS Model Onboarding Playbook
 
-本文是 `docs/agents/model_tool_agent/AGENTS.md` 的 TTS 任务补充，基于
+本文是 `sure/skills/sure_onboard/references/AGENTS.md` 的 TTS 任务补充，基于
 `SWivid__F5-TTS_Emilia-ZH-EN` 和 `IndexTeam__IndexTTS-2` 的接入经验。
 
 ## 1. 任务边界

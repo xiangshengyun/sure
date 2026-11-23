@@ -128,6 +128,41 @@ def dataset_projection_root_from_eval_input(eval_input: dict[str, Any]) -> Path 
     return root
 
 
+def referenced_dataset_mounts_from_eval_input(eval_input: dict[str, Any]) -> list[dict[str, str]]:
+    """Every resolved referenced dataset as (host source, container target).
+
+    The set was already validated against the allowed source roots when the input was
+    resolved, and that trust is deliberate: this re-checks the shape only. A host root
+    outside the allowed roots is therefore caught at resolution, not here, so the
+    eval_input handed in must come from resolve_eval_input or be equally validated.
+    """
+    runtime = eval_input.get("runtime") if isinstance(eval_input.get("runtime"), dict) else {}
+    references = runtime.get("referenced_datasets")
+    if references is None:
+        return []
+    if not isinstance(references, list):
+        raise ValueError("eval input referenced_datasets must be a list")
+    mounts: list[dict[str, str]] = []
+    for entry in references:
+        if not isinstance(entry, dict):
+            raise ValueError("eval input referenced_datasets entries must be objects")
+        source = str(entry.get("host_root") or "").strip()
+        target = str(entry.get("source_dataset_root") or "").strip()
+        if not source or not target:
+            raise ValueError(
+                "eval input referenced_datasets entries need host_root and source_dataset_root"
+            )
+        if not Path(source).expanduser().is_absolute():
+            raise ValueError(f"eval input referenced dataset host_root must be absolute: {source}")
+        target_path = container_path(target)
+        if not PurePosixPath(target_path).is_absolute():
+            raise ValueError(
+                f"eval input referenced dataset source_dataset_root must be absolute: {target}"
+            )
+        mounts.append({"source": source, "target": target_path})
+    return mounts
+
+
 def container_path(host: str | PurePath) -> str:
     """Spell a host path for the container side, which is POSIX on every host.
 
@@ -320,6 +355,16 @@ def build_local_container_command(
             if mount_source.exists():
                 _mount(command, mounted_targets, mount_source, container_path(mount_target), read_only=True)
 
+    # A compose dataset reads media that belong to another site dataset. Those roots
+    # are mounted read-only at their canonical path, which is the path its samples
+    # use, and a root that is already mounted at the same target is not added twice.
+    referenced_dataset_mounts = referenced_dataset_mounts_from_eval_input(eval_input)
+    for referenced in referenced_dataset_mounts:
+        source = Path(referenced["source"]).expanduser()
+        if not source.is_dir():
+            raise ValueError(f"referenced dataset source is not an existing directory: {source}")
+        _mount(command, mounted_targets, source, referenced["target"], read_only=True)
+
     env = surface_env(surface)
     source_provenance = surface.get("source_provenance") if isinstance(surface.get("source_provenance"), dict) else {}
     for key, value in list(env.items()):
@@ -413,6 +458,14 @@ def build_local_container_command(
             if dataset_projection_root is not None
             else None
         ),
+        "referenced_dataset_mounts": [
+            {
+                "source": str(Path(item["source"]).expanduser().resolve()),
+                "target": item["target"],
+                "read_only": True,
+            }
+            for item in referenced_dataset_mounts
+        ],
         "harness_runtime": harness_runtime,
         "evaluation_runtime": evaluation_runtime,
         "execution_provenance": execution_provenance,

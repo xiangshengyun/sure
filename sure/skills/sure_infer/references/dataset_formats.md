@@ -94,6 +94,18 @@ Annotation shape by task:
   This, not a user-supplied flag, selects the projection task. Absent means the
   legacy ASR default; declared but unsupported is an error.
 
+### Referenced source datasets (`extras/`)
+
+A source dataset may carry `extras/<version_id>/selection_manifest.jsonl`, one
+JSON object per selected sample. When a sample's media lives in another source
+dataset, its row records `source_dataset_root` as the canonical absolute path of
+that dataset, and `/sure_infer` mounts each such root read-only at its canonical
+path before execution. Only the directory named after the resolved `version_id` is
+read; there is no fallback to `extras/TEMP_VERSION`, so a manifest elsewhere under
+`extras/` is reported as absent rather than guessed at. The declared root must sit
+under a configured `allowed_source_roots` entry and exist, or the run fails at
+input resolution.
+
 ## OpenBench — the publication format
 
 ```text

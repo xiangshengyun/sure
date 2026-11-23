@@ -39,6 +39,7 @@ from sure_eval.datasets.source_resolver import (
 
 from evaluation_capabilities import default_metrics_for_task_language, supported_metrics_for_task_language
 from harness_runtime import HarnessRuntimeBindingError, load_harness_runtime
+from referenced_datasets import ReferencedDatasetError, collect_referenced_datasets
 from resolve_evaluation_engine import resolve_engine_root
 from resolve_model_dir import APPROVED_MODELS_ROOT, resolve_approved_model
 from sure.site.loader import load_site_policy
@@ -926,6 +927,13 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         dataset_source_key=args.dataset_source_key,
     )
     _check_task_compatibility(model, datasets)
+    # Read before the container plan exists: a referenced source dataset that may not
+    # be mounted fails the run here, instead of surfacing as zero predictions later.
+    referenced_datasets, selection_manifests = collect_referenced_datasets(datasets)
+    for item in datasets:
+        report = selection_manifests.get(str(item.get("name") or ""))
+        if report is not None:
+            item["selection_manifest"] = report
     model_config = yaml.safe_load((Path(model["model_dir"]) / "config.yaml").read_text(encoding="utf-8")) or {}
     # The optimized independent-sample scheduler is the default. A model may
     # explicitly opt into the old behavior for a compatibility exception.
@@ -993,6 +1001,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
             "harness_lock_sha256": harness_runtime["lock_sha256"],
             "harness_python_executable": harness_runtime["python_executable"],
             "dataset_projection": dataset_projection,
+            "referenced_datasets": referenced_datasets,
             "prediction_validation": {
                 "require_nonempty": bool(getattr(args, "require_nonempty_predictions", False)),
             },
@@ -1054,7 +1063,7 @@ def main() -> int:
 
     try:
         payload = build_payload(args)
-    except (EvalInputError, SourceResolutionError) as exc:
+    except (EvalInputError, SourceResolutionError, ReferencedDatasetError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     text = json.dumps(payload, indent=2, ensure_ascii=False)

@@ -42,11 +42,14 @@ plan every later unit reads:
 - `model`, including the immutable deployment binding, comes only from the
   approved model directory.
 - `datasets` is the canonical expanded dataset list; the task and language of
-  each dataset are inferred from dataset metadata.
+  each dataset are inferred from dataset metadata. A dataset whose source version
+  carries `extras/<version_id>/selection_manifest.jsonl` records what that
+  manifest said in `datasets[*].selection_manifest`.
 - `runtime` records `run_dir`, the resolved device, the execution plan and the
   `max_samples` sample scope and the prediction validation policy before the
   state machine starts. The policy is recorded in
-  `runtime.prediction_validation.require_nonempty`.
+  `runtime.prediction_validation.require_nonempty`. The source datasets the
+  selected manifests reference are resolved into `runtime.referenced_datasets`.
 
 Do not ask the user for `task` as the primary input. If a legacy prompt includes
 `task=asr` or similar, treat it only as a consistency hint; the source of truth
@@ -186,7 +189,13 @@ selected config and binds its dataset entry to the resolved writable projection
 root. The first run creates `sure_benchmark/jsonl` plus generated indexes and
 metadata there. Source `sample.jsonl`, `ds.jsonl`, and raw audio remain under the
 configured `allowed_source_roots`; execution mounts those source roots and the
-approved model read-only. Configure the projection with `datasets_root`,
+approved model read-only. A compose dataset whose samples read media from another
+source dataset gets one more read-only mount per referenced root, at the canonical
+path recorded in its manifest, so the absolute paths inside its samples resolve
+unchanged. A referenced root outside `allowed_source_roots`, or one that is not an
+existing directory, fails input resolution instead of yielding zero predictions.
+
+Configure the projection with `datasets_root`,
 `SURE_EVAL_DATASETS_ROOT`, or site policy `datasets.projection_root`. The
 repository-local `data/datasets` path is only the development fallback.
 

@@ -22,7 +22,9 @@ JSONL 中的音频:
 
 模型可以正常启动，但在第一次读取外部音频时失败，最终表现为零预测和 smoke 阶段失败。
 
-## 2. 当前实现
+## 2. 改造前的实现
+
+> 本节记录改造前的行为，改造后的行为见第 10 节实施状态。
 
 相关实现位于：
 
@@ -43,12 +45,14 @@ dataset-B/source_root -> 只读挂载
 dataset-C/source_root -> 只读挂载
 ```
 
-当前实现不会：
+改造前的实现不会：
 
 - 自动挂载共同父目录；
 - 扫描整个 `external_ds`；
 - 读取 `selection_manifest.jsonl`；
 - 根据 compose 数据集的引用关系补充挂载外部源数据集。
+
+其中「读取 manifest」与「补充挂载外部源数据集」已在本次改造中实现；「自动挂载共同父目录」和「扫描整个 `external_ds`」仍然不做。
 
 ## 3. 目标
 
@@ -260,7 +264,7 @@ manifest 是数据输入，不应成为绕过站点允许路径策略的入口�
 
 ## 10. 本次决策
 
-本阶段只形成方案，不修改实现。
+本阶段的方案已落地实现（见下方实施状态），设计取舍如下。
 
 > 实施状态（2026-11-23）：方案已落地。`sure/skills/sure_infer/scripts/referenced_datasets.py`
 > 读取并校验 manifest，`resolve_eval_input.py` 把结果写进 `datasets[*].selection_manifest`
